@@ -1,6 +1,51 @@
-import React from 'react'
-import { Link } from 'react-router-dom'
+import React, { useState, useEffect } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { useDispatch, useSelector } from 'react-redux'
+import { registerUser, clearError, resetRegistrationStatus } from '../../redux/authSlice'
+
 function Register() {
+  const navigate = useNavigate();
+  const dispatch = useDispatch();
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  const { loading, error, registrationSuccess } = useSelector((state) => state.auth);
+  const [localError, setLocalError] = useState(null);
+
+  useEffect(() => {
+    if (registrationSuccess) {
+      dispatch(resetRegistrationStatus());
+      navigate('/login', { state: { successMessage: 'Account created successfully. Please login!' } });
+    }
+  }, [registrationSuccess, navigate, dispatch]);
+
+  useEffect(() => {
+    if (error) {
+      setLocalError(error);
+      const timer = setTimeout(() => {
+        setLocalError(null);
+        dispatch(clearError());
+      }, 3000);
+      return () => clearTimeout(timer);
+    } else {
+      setLocalError(null);
+    }
+  }, [error, dispatch]);
+
+  useEffect(() => {
+    return () => {
+      dispatch(clearError());
+    };
+  }, [dispatch]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    dispatch(registerUser({ username, email, password, phone }));
+  };
+
   return (
     <>
         <section className="create_account pt-120 pb-120">
@@ -13,29 +58,82 @@ function Register() {
                             <span>Already have an ccount?</span>
                             <Link to="/login" className="p1-color">Login</Link>
                         </div>
-                        <form className="d-flex flex-column gap-5 gap-md-6">
+
+                        {localError && (
+                            <div className="alert alert-danger py-2 px-3 rounded-3 mb-4 text-start" role="alert" style={{ fontSize: '14px' }}>
+                                {localError}
+                            </div>
+                        )}
+
+                        <form onSubmit={handleSubmit} className="d-flex flex-column gap-5 gap-md-6">
                             <div className="input-group">
-                                <label for="username" className="fw_500 mb-1">User name</label>
-                                <input className="rounded-4" type="text" name="username" id="username" required />
+                                <label htmlFor="username" className="fw_500 mb-1">User name</label>
+                                <input 
+                                    className="rounded-4" 
+                                    type="text" 
+                                    name="username" 
+                                    id="username" 
+                                    value={username}
+                                    onChange={(e) => setUsername(e.target.value)}
+                                    required 
+                                />
                             </div>
 
                             <div className="input-group">
-                                <label for="email" className="fw_500 mb-1">Email address</label>
-                                <input className="rounded-4" type="email" name="email" id="email" required />
+                                <label htmlFor="email" className="fw_500 mb-1">Email address</label>
+                                <input 
+                                    className="rounded-4" 
+                                    type="email" 
+                                    name="email" 
+                                    id="email" 
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    required 
+                                />
                             </div>
 
                             <div className="input-group">
-                                <div className="d-flex align-items-center justify-content-between gap-5 w-100">
-                                    <label for="password" className="fw_500 mb-1">Password</label>
-                                    <span className="d-center gap-2 cpoint"><i className="fa-solid fa-eye-slash"></i>
-                                        Hide</span>
+                                <label htmlFor="phone" className="fw_500 mb-1">Phone Number</label>
+                                <input 
+                                    className="rounded-4" 
+                                    type="tel" 
+                                    name="phone" 
+                                    id="phone" 
+                                    value={phone}
+                                    onChange={(e) => setPhone(e.target.value)}
+                                    required 
+                                />
+                            </div>
+
+                            <div className="input-group">
+                                <label htmlFor="password" className="fw_500 mb-1">Password</label>
+                                <div className="position-relative w-100">
+                                    <input 
+                                        className="rounded-4 mb-1 w-100" 
+                                        type={showPassword ? "text" : "password"} 
+                                        name="password" 
+                                        id="password" 
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        required 
+                                        style={{ paddingRight: '60px' }}
+                                    />
+                                    <span 
+                                        onClick={() => setShowPassword(!showPassword)} 
+                                        className="position-absolute end-0 top-50 translate-middle-y me-3 cpoint d-flex align-items-center gap-2"
+                                        style={{ cursor: 'pointer', zIndex: 10, color: 'var(--p1-color)' }}
+                                    >
+                                        <i className={showPassword ? "fa-solid fa-eye" : "fa-solid fa-eye-slash"}></i>
+                                        {showPassword ? 'Hide' : 'Show'}
+                                    </span>
                                 </div>
-                                <input className="rounded-4 mb-1" type="password" name="password" id="password" required />
                                 <span className="fs-seven">Use 8 or more characters with a mix of letters, numbers &
                                     symbols</span>
                             </div>
 
-                            <button type="submit" className="cmn-btn second-alt py-3 py-sm-4">Sign Up</button>
+                            <button type="submit" disabled={loading} className="cmn-btn second-alt py-3 py-sm-4">
+                                {loading ? 'Signing up...' : 'Sign Up'}
+                            </button>
                             <div className="hr-stl d-flex align-items-center gap-3 gap-md-5">
                                 <hr className="w-100" />
                                 <p>Or</p>

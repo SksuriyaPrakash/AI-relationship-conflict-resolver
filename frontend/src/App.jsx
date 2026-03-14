@@ -5,8 +5,7 @@ import Advice from './components/pages/Advice'
 import Discussion from './components/pages/Discussion'
 import Login from './components/pages/Login'
 import Register from './components/pages/Register'
-
-
+import Dashboard from './components/pages/Dashboard'
 
 function App() {
   return (
@@ -18,6 +17,7 @@ function App() {
           <Route path="discussion" element={<Discussion />} />
           <Route path="login" element={<Login />} />
           <Route path="register" element={<Register />} />
+          <Route path="dashboard" element={<Dashboard />} />
         </Route>
       </Routes>
     </Router>

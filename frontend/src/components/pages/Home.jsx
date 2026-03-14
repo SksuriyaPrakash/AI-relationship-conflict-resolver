@@ -1,6 +1,126 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 function Home() {
+  useEffect(() => {
+    // 1. Initialize niceSelect
+    if (window.jQuery && window.jQuery.fn.niceSelect) {
+      window.jQuery('select').niceSelect();
+    }
+
+    // 2. Initialize Odometer
+    if (window.jQuery) {
+      window.jQuery(".odometer").each(function () {
+        const finalVal = window.jQuery(this).attr("data-odometer-final");
+        if (finalVal) {
+          window.jQuery(this).html(finalVal);
+        }
+      });
+    }
+
+    // 3. Initialize Swipers
+    let swiperInstances = [];
+
+    if (window.Swiper) {
+      // Categories Top Swiper
+      const categoriesCarousel = document.querySelector('.categories_top');
+      const categoriesBtn = document.querySelector('.categories_top_btn');
+      if (categoriesCarousel) {
+        try {
+          const swiper1 = new window.Swiper(categoriesCarousel, {
+            loop: true,
+            autoplay: {
+              delay: 2000,
+              disableOnInteraction: false,
+            },
+            spaceBetween: 24,
+            slidesPerView: 1,
+            paginationClickable: true,
+            navigation: categoriesBtn ? {
+              nextEl: categoriesBtn.querySelector('.ara-next'),
+              prevEl: categoriesBtn.querySelector('.ara-prev'),
+            } : {},
+            breakpoints: {
+              1400: { slidesPerView: 6 },
+              1200: { slidesPerView: 4 },
+              992: { slidesPerView: 3 },
+              768: { slidesPerView: 4 },
+              578: { slidesPerView: 3 },
+              375: { slidesPerView: 2 },
+            }
+          });
+          swiperInstances.push(swiper1);
+        } catch (e) {
+          console.error("Error initializing categories Swiper:", e);
+        }
+      }
+
+      // consul_month2 Swiper
+      const consulMonthCarousel2 = document.querySelector('.consul_month2');
+      if (consulMonthCarousel2) {
+        try {
+          const swiper2 = new window.Swiper(consulMonthCarousel2, {
+            loop: true,
+            speed: 5000,
+            autoplay: {
+              delay: false,
+              disableOnInteraction: false,
+            },
+            spaceBetween: 24,
+            slidesPerView: 1,
+            paginationClickable: true,
+            breakpoints: {
+              1799: { slidesPerView: 5 },
+              1499: { slidesPerView: 4 },
+              991: { slidesPerView: 3 },
+              575: { slidesPerView: 2 },
+              375: { slidesPerView: 1 },
+            }
+          });
+          swiperInstances.push(swiper2);
+        } catch (e) {
+          console.error("Error initializing consul_month2 Swiper:", e);
+        }
+      }
+
+      // consul_month3 Swiper
+      const consulMonthCarousel3 = document.querySelector('.consul_month3');
+      if (consulMonthCarousel3) {
+        try {
+          const swiper3 = new window.Swiper(consulMonthCarousel3, {
+            loop: true,
+            speed: 5000,
+            autoplay: {
+              delay: false,
+              disableOnInteraction: false,
+              reverseDirection: true,
+            },
+            spaceBetween: 24,
+            slidesPerView: 1,
+            paginationClickable: true,
+            breakpoints: {
+              1799: { slidesPerView: 5 },
+              1499: { slidesPerView: 4 },
+              991: { slidesPerView: 3 },
+              575: { slidesPerView: 2 },
+              375: { slidesPerView: 1 },
+            }
+          });
+          swiperInstances.push(swiper3);
+        } catch (e) {
+          console.error("Error initializing consul_month3 Swiper:", e);
+        }
+      }
+    }
+
+    return () => {
+      swiperInstances.forEach(swiper => {
+        if (swiper && typeof swiper.destroy === 'function') {
+          swiper.destroy(true, true);
+        }
+      });
+    };
+  }, []);
+
   return (
     <>
 

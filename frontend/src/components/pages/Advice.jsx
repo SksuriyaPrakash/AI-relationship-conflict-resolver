@@ -1,6 +1,12 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 
 function Advice() {
+  useEffect(() => {
+    if (window.jQuery && window.jQuery.fn.niceSelect) {
+      window.jQuery('select').niceSelect();
+    }
+  }, []);
+
   return (
     <>
           {/* Discussion Starts */}
