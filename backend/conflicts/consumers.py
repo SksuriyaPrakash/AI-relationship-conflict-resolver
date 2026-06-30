@@ -147,8 +147,8 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
 
             # Route message handling depending on the phase
             if phase == "individual":
-                # AI responds to the user individually
-                await self.handle_individual_chat_response(message_text)
+                # Auto-submit individual side immediately after saving the message
+                await self.handle_submit_side()
             
             elif phase == "cross_ref":
                 # Check if both have completed their cross-referencing replies
@@ -232,34 +232,21 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         await self.update_progress(self.session, progress_pct, f"Partner submitted individual side. Progress: {progress_pct}%")
 
         if is_p1_submitted and is_p2_submitted:
-            # Both submitted! Transition to cross_referencing phase
-            await self.update_session_status(self.session, "cross_referencing")
-            await self.update_progress(self.session, 45, "Entering cross-referencing phase.")
+            # Both submitted! Transition directly to analyzing phase
+            await self.update_session_status(self.session, "analyzing")
+            await self.update_progress(self.session, 75, "Both partners completed individual sides. Running AI analysis.")
             
-            # Generate paraphrased summaries
-            p1_msgs = await self.get_user_messages_in_phase(self.session, self.session.couple.partner_1, "individual")
-            p2_msgs = await self.get_user_messages_in_phase(self.session, self.session.couple.partner_2, "individual")
-            
-            p1_paraphrase = await database_sync_to_async(generate_paraphrased_perspective)(p1_msgs, self.session.couple.partner_2.language_preference)
-            p2_paraphrase = await database_sync_to_async(generate_paraphrased_perspective)(p2_msgs, self.session.couple.partner_1.language_preference)
-
-            # Send cross reference prompt to partner 1 (about partner 2)
-            p1_prompt = f"Your partner feels: '{p2_paraphrase}'. What is your perspective on this?" if self.session.couple.partner_1.language_preference == "english" else f"உங்கள் துணையின் கருத்து: '{p2_paraphrase}'. இதைப் பற்றிய உங்கள் கருத்து என்ன?"
-            await self.save_message(self.session, self.session.couple.partner_1, p1_prompt, is_ai=True, phase="cross_ref")
-
-            # Send cross reference prompt to partner 2 (about partner 1)
-            p2_prompt = f"Your partner feels: '{p1_paraphrase}'. What is your perspective on this?" if self.session.couple.partner_2.language_preference == "english" else f"உங்கள் துணையின் கருத்து: '{p1_paraphrase}'. இதைப் பற்றிய உங்கள் கருத்து என்ன?"
-            await self.save_message(self.session, self.session.couple.partner_2, p2_prompt, is_ai=True, phase="cross_ref")
-
-            # Broadcast session update and prompt messages to both respectively
+            # Broadcast analyzing status to block inputs
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
-                    "type": "broadcast_cross_ref_started",
-                    "p1_prompt": p1_prompt,
-                    "p2_prompt": p2_prompt
+                    "type": "broadcast_analyzing",
+                    "status": "analyzing"
                 }
             )
+
+            # Trigger LangGraph pipeline
+            await self.run_analysis_pipeline()
         else:
             # Only one has submitted.
             await self.send_json({

@@ -11,7 +11,6 @@ function Header() {
 
   const [activeDropdown, setActiveDropdown] = useState(null);
 
-  const profileButtonRef = useRef(null);
 
   useEffect(() => {
     const handleOutsideClick = (event) => {
@@ -26,21 +25,6 @@ function Header() {
     };
   }, []);
 
-  useEffect(() => {
-    const button = profileButtonRef.current;
-    if (!button) return;
-
-    const handleButtonClick = (e) => {
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-      setActiveDropdown(prev => prev === 'profile' ? null : 'profile');
-    };
-
-    button.addEventListener('click', handleButtonClick);
-    return () => {
-      button.removeEventListener('click', handleButtonClick);
-    };
-  }, []);
 
   const [showLogoutModal, setShowLogoutModal] = useState(false);
 
@@ -241,19 +225,11 @@ function Header() {
                                     </div>
                                     <div className="single-item cart-area position-relative">
                                          <div className="cmn-head">
-                                             <button ref={profileButtonRef} type="button" aria-label="Shopping Button"
-                                                 onClick={() => setActiveDropdown(activeDropdown === 'profile' ? null : 'profile')}
-                                                 className="icon-area p-0 box-style box-second d-center position-relative">
-                                                 <img src={user?.profile_pic || "src/assets/images/jesifafan-icons.png"} className="rounded-5" style={{ width: '40px', height: '40px', objectFit: 'cover' }} alt="Icons" />
+                                             <Link to="/dashboard" className="icon-area p-0 box-style box-second d-center position-relative" style={{ display: 'flex' }}>
+                                                 <img src={user?.profile_pic || "src/assets/images/jesifafan-icons.png"} className="rounded-5" style={{ width: '40px', height: '40px', objectFit: 'cover' }} alt="Profile Icon" />
                                                  <span className="abs-area position-absolute fs-nine s6-bg"></span>
-                                             </button>
+                                             </Link>
                                          </div>
-                                         <div className={`profile_area common_area p-4 p-md-5 rounded-20 border-s5 p2-bg ${activeDropdown === 'profile' ? 'show' : ''}`}>
-                                
-                                            <Link  to="/dashboard" className="d-block" style={{ cursor: 'pointer' }}>Dashboard</Link>
-                                            <br/>
-                                            <a  onClick={handleLogoutClick} className="d-block" style={{ cursor: 'pointer' }}>Logout</a>
-                                        </div>
                                     </div>
                                 </>
                             ) : (
