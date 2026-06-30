@@ -37,7 +37,7 @@ const Discussion = () => {
                                             <img src="src/assets/images/discussion-samon.png" alt="Image" />
                                         </li>
                                         <li className="discussion_area__post-file file d-center">
-                                            <label for="file" className="label cpoint">
+                                            <label htmlFor="file" className="label cpoint">
                                                 <i className="fa-regular fa-image fs-three p-2 p-md-3 rounded-3"></i>
                                             </label>
                                             <input type="file" id="file" className="d-none" />
@@ -182,7 +182,7 @@ const Discussion = () => {
                                                 </span>
                                             </div>
                                             <div className="discussion_area__comment-img">
-                                                <label for="imge" className="label cpoint">
+                                                <label htmlFor="imge" className="label cpoint">
                                                     <i className="fa-regular fa-image fs-four p-3 rounded-3"></i>
                                                 </label>
                                                 <input type="file" id="imge" className="d-none" />
@@ -252,7 +252,7 @@ const Discussion = () => {
                                                                 </span>
                                                             </div>
                                                             <div className="discussion_area__comment-img">
-                                                                <label for="imge" className="label cpoint">
+                                                                <label htmlFor="imge" className="label cpoint">
                                                                     <i
                                                                         className="fa-regular fa-image fs-four p-3 rounded-3"></i>
                                                                 </label>
@@ -324,7 +324,7 @@ const Discussion = () => {
                                                                 </span>
                                                             </div>
                                                             <div className="discussion_area__comment-img">
-                                                                <label for="imge" className="label cpoint">
+                                                                <label htmlFor="imge" className="label cpoint">
                                                                     <i
                                                                         className="fa-regular fa-image fs-four p-3 rounded-3"></i>
                                                                 </label>
@@ -396,7 +396,7 @@ const Discussion = () => {
                                                                 </span>
                                                             </div>
                                                             <div className="discussion_area__comment-img">
-                                                                <label for="imge" className="label cpoint">
+                                                                <label htmlFor="imge" className="label cpoint">
                                                                     <i
                                                                         className="fa-regular fa-image fs-four p-3 rounded-3"></i>
                                                                 </label>
