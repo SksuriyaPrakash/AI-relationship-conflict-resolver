@@ -5,10 +5,18 @@ from .models import CoupleProfile
 User = get_user_model()
 
 class UserSerializer(serializers.ModelSerializer):
+    is_partner_added = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'phone', 'occupation', 'language_preference', 'invite_token')
+        fields = ('id', 'username', 'email', 'phone', 'occupation', 'gender', 'profile_pic', 'language_preference', 'invite_token', 'is_partner_added')
         read_only_fields = ('invite_token',)
+
+    def get_is_partner_added(self, obj):
+        from django.db.models import Q
+        return CoupleProfile.objects.filter(
+            Q(partner_1=obj, partner_2__isnull=False) | Q(partner_2=obj)
+        ).exists()
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
@@ -17,7 +25,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('username', 'password', 'email', 'phone', 'occupation', 'language_preference', 'invite_code', 'relationship_duration')
+        fields = ('username', 'password', 'email', 'phone', 'occupation', 'gender', 'profile_pic', 'language_preference', 'invite_code', 'relationship_duration')
 
     def create(self, validated_data):
         invite_code = validated_data.pop('invite_code', None)

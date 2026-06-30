@@ -25,14 +25,14 @@ function Login() {
   useEffect(() => {
     if (location.state?.successMessage) {
       setSuccessMsg(location.state.successMessage);
-      // Clear location state so that refreshing doesn't re-show the alert
-      navigate(location.pathname, { replace: true, state: {} });
       const timer = setTimeout(() => {
         setSuccessMsg(null);
+        // Clear location state after the alert message hides
+        navigate(location.pathname, { replace: true, state: {} });
       }, 3000);
       return () => clearTimeout(timer);
     }
-  }, [location, navigate]);
+  }, [location.state?.successMessage, navigate, location.pathname]);
 
   useEffect(() => {
     if (error) {

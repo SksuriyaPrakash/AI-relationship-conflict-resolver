@@ -54,13 +54,16 @@ export const loginUser = createAsyncThunk(
 // Async Thunk for User Registration
 export const registerUser = createAsyncThunk(
   'auth/registerUser',
-  async ({ username, email, password, phone }, { rejectWithValue }) => {
+  async ({ username, email, password, phone, occupation, gender, invite_code }, { rejectWithValue }) => {
     try {
       const payload = {
         username,
         email,
         password,
         phone,
+        occupation,
+        gender,
+        invite_code: invite_code || undefined,
       };
 
       const response = await axios.post(`${Base_Url}/api/users/register/`, payload);
@@ -80,6 +83,43 @@ export const registerUser = createAsyncThunk(
       return data;
     } catch (error) {
       return rejectWithValue(extractErrorMessage(error, 'An error occurred during registration.'));
+    }
+  }
+);
+
+// Async Thunk for Fetching User Profile
+export const fetchUserProfile = createAsyncThunk(
+  'auth/fetchUserProfile',
+  async (_, { getState, rejectWithValue }) => {
+    try {
+      const { token } = getState().auth;
+      const response = await axios.get(`${Base_Url}/api/users/profile/`, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(extractErrorMessage(error, 'Failed to fetch profile.'));
+    }
+  }
+);
+
+// Async Thunk for Updating User Profile
+export const updateUserProfile = createAsyncThunk(
+  'auth/updateUserProfile',
+  async (formData, { getState, rejectWithValue }) => {
+    try {
+      const { token } = getState().auth;
+      const response = await axios.put(`${Base_Url}/api/users/profile/`, formData, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      return response.data;
+    } catch (error) {
+      return rejectWithValue(extractErrorMessage(error, 'Failed to update profile.'));
     }
   }
 );
@@ -145,6 +185,28 @@ const authSlice = createSlice({
       .addCase(registerUser.rejected, (state, action) => {
         state.loading = false;
         state.registrationSuccess = false;
+        state.error = action.payload;
+      })
+
+      // Fetch User Profile Reducers
+      .addCase(fetchUserProfile.fulfilled, (state, action) => {
+        state.user = action.payload;
+        localStorage.setItem('user', JSON.stringify(action.payload));
+      })
+
+      // Update User Profile Reducers
+      .addCase(updateUserProfile.pending, (state) => {
+        state.loading = true;
+        state.error = null;
+      })
+      .addCase(updateUserProfile.fulfilled, (state, action) => {
+        state.loading = false;
+        state.user = action.payload;
+        localStorage.setItem('user', JSON.stringify(action.payload));
+        state.error = null;
+      })
+      .addCase(updateUserProfile.rejected, (state, action) => {
+        state.loading = false;
         state.error = action.payload;
       });
   },

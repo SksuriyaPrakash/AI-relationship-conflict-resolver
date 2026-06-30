@@ -1173,7 +1173,7 @@ function Home() {
                                     <i className="ti ti-phone-call fs-five p2-color"></i>
                                 </div>
                                 <div className="d-flex align-items-center justify-content-center">
-                                    <span className="fs-four fw_500">$24</span>
+                                    <span className="fs-four fw_500">₹ 1000</span>
                                     <span className="fs-ten">/hour</span>
                                 </div>
                             </div>
@@ -1215,7 +1215,7 @@ function Home() {
                                     <i className="ti ti-phone-call fs-five p2-color"></i>
                                 </div>
                                 <div className="d-flex align-items-center justify-content-center">
-                                    <span className="fs-four fw_500">$24</span>
+                                    <span className="fs-four fw_500">₹ 1000</span>
                                     <span className="fs-ten">/hour</span>
                                 </div>
                             </div>
@@ -1257,7 +1257,7 @@ function Home() {
                                     <i className="ti ti-phone-call fs-five p2-color"></i>
                                 </div>
                                 <div className="d-flex align-items-center justify-content-center">
-                                    <span className="fs-four fw_500">$24</span>
+                                    <span className="fs-four fw_500">₹ 1000</span>
                                     <span className="fs-ten">/hour</span>
                                 </div>
                             </div>
@@ -1299,7 +1299,7 @@ function Home() {
                                     <i className="ti ti-phone-call fs-five p2-color"></i>
                                 </div>
                                 <div className="d-flex align-items-center justify-content-center">
-                                    <span className="fs-four fw_500">$24</span>
+                                    <span className="fs-four fw_500">₹ 1000</span>
                                     <span className="fs-ten">/hour</span>
                                 </div>
                             </div>

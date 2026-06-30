@@ -9,6 +9,8 @@ class CustomUser(AbstractUser):
     ]
     phone = models.CharField(max_length=15, blank=True)
     occupation = models.CharField(max_length=100, blank=True)
+    gender = models.CharField(max_length=10, blank=True)
+    profile_pic = models.FileField(upload_to='profile_pics/', null=True, blank=True)
     language_preference = models.CharField(
         max_length=10,
         choices=LANGUAGE_CHOICES,

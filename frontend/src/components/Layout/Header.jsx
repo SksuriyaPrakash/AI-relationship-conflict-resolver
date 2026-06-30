@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useSelector, useDispatch } from 'react-redux'
 import { logout } from '../../redux/authSlice'
@@ -6,10 +6,12 @@ import { logout } from '../../redux/authSlice'
 function Header() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
-  const { token } = useSelector((state) => state.auth);
+  const { token, user } = useSelector((state) => state.auth);
   const isAuthenticated = !!token;
 
   const [activeDropdown, setActiveDropdown] = useState(null);
+
+  const profileButtonRef = useRef(null);
 
   useEffect(() => {
     const handleOutsideClick = (event) => {
@@ -24,9 +26,34 @@ function Header() {
     };
   }, []);
 
-  const handleLogout = () => {
+  useEffect(() => {
+    const button = profileButtonRef.current;
+    if (!button) return;
+
+    const handleButtonClick = (e) => {
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      setActiveDropdown(prev => prev === 'profile' ? null : 'profile');
+    };
+
+    button.addEventListener('click', handleButtonClick);
+    return () => {
+      button.removeEventListener('click', handleButtonClick);
+    };
+  }, []);
+
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
+
+  const handleLogoutClick = (e) => {
+    e.preventDefault();
+    setActiveDropdown(null);
+    setShowLogoutModal(true);
+  };
+
+  const confirmLogout = () => {
+    setShowLogoutModal(false);
     dispatch(logout());
-    navigate('/login');
+    navigate('/login', { state: { successMessage: 'account logout successfully..!' } });
   };
 
   return (
@@ -55,11 +82,7 @@ function Header() {
                                 <li className="dropdown show-dropdown">
                                     <Link to="/advice" className="dropdown-nav d-flex align-items-center fs-ten">Advice</Link>
                                 </li>
-                                {!isAuthenticated && (
-                                    <li className="dropdown show-dropdown">
-                                        <Link to="/login" className="dropdown-nav d-flex align-items-center fs-ten">Login</Link>
-                                    </li>
-                                )}
+                               
                             </ul>
                         </div>
 
@@ -216,19 +239,20 @@ function Header() {
                                             </div>
                                         </div>
                                     </div>
-                                    <div className={`single-item cart-area position-relative ${activeDropdown === 'profile' ? 'show' : ''}`}>
-                                        <div className="cmn-head common_toggles">
-                                            <button type="button" aria-label="Shopping Button"
-                                                onClick={() => setActiveDropdown(activeDropdown === 'profile' ? null : 'profile')}
-                                                className="icon-area p-0 box-style box-second d-center position-relative">
-                                                <img src="src/assets/images/jesifafan-icons.png" className="rounded-5" alt="Icons" />
-                                                <span className="abs-area position-absolute fs-nine s6-bg"></span>
-                                            </button>
-                                        </div>
-                                        <div className="profile_area common_area p-4 p-md-5 rounded-20 border-s5 p2-bg">
-                                            <a href="my-feed.html" className="d-block mb-3">My Feed</a>
-                                            <a href="my-feed.html" className="d-block mb-3">My Profile</a>
-                                            <a href="javascript:void(0)" onClick={handleLogout} className="d-block">Logout</a>
+                                    <div className="single-item cart-area position-relative">
+                                         <div className="cmn-head">
+                                             <button ref={profileButtonRef} type="button" aria-label="Shopping Button"
+                                                 onClick={() => setActiveDropdown(activeDropdown === 'profile' ? null : 'profile')}
+                                                 className="icon-area p-0 box-style box-second d-center position-relative">
+                                                 <img src={user?.profile_pic || "src/assets/images/jesifafan-icons.png"} className="rounded-5" style={{ width: '40px', height: '40px', objectFit: 'cover' }} alt="Icons" />
+                                                 <span className="abs-area position-absolute fs-nine s6-bg"></span>
+                                             </button>
+                                         </div>
+                                         <div className={`profile_area common_area p-4 p-md-5 rounded-20 border-s5 p2-bg ${activeDropdown === 'profile' ? 'show' : ''}`}>
+                                
+                                            <Link  to="/dashboard" className="d-block" style={{ cursor: 'pointer' }}>Dashboard</Link>
+                                            <br/>
+                                            <a  onClick={handleLogoutClick} className="d-block" style={{ cursor: 'pointer' }}>Logout</a>
                                         </div>
                                     </div>
                                 </>
@@ -247,6 +271,49 @@ function Header() {
         </div>
     </header>
     {/*  header-section end */}
+    
+    {showLogoutModal && (
+        <div 
+          className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center" 
+          style={{ 
+            backgroundColor: 'rgba(0, 0, 0, 0.6)', 
+            zIndex: 9999,
+            backdropFilter: 'blur(4px)',
+            transition: 'all 0.3s ease'
+          }}
+        >
+          <div 
+            className="p-5 rounded-20 bg-white shadow-lg text-center" 
+            style={{ 
+              maxWidth: '400px', 
+              width: '90%',
+              border: '1px solid rgba(0, 0, 0, 0.1)'
+            }}
+          >
+            <div className="d-flex align-items-center justify-content-center rounded-circle mx-auto mb-4" style={{ width: '60px', height: '60px', backgroundColor: 'rgba(236, 96, 79, 0.1)' }}>
+              <i className="ti ti-logout" style={{ fontSize: '30px', color: '#EC604F' }}></i>
+            </div>
+            <h3 className="mb-2" style={{ color: '#190F47' }}>Logout</h3>
+            <p className="text-muted mb-4 fs-nine">Are you sure you want to logout from your account?</p>
+            <div className="d-flex gap-3 justify-content-center">
+              <button 
+                onClick={() => setShowLogoutModal(false)} 
+                className="cmn-btn border-0 py-2 px-4 rounded-3 text-white"
+                style={{ backgroundColor: '#6c757d', minWidth: '100px' }}
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={confirmLogout} 
+                className="cmn-btn border-0 py-2 px-4 rounded-3 text-white"
+                style={{ backgroundColor: '#EC604F', minWidth: '100px' }}
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

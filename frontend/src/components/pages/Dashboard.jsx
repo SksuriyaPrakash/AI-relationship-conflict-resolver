@@ -1,23 +1,323 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { useNavigate, Link } from 'react-router-dom';
-import { logout } from '../../redux/authSlice';
+import { logout, fetchUserProfile, updateUserProfile } from '../../redux/authSlice';
+import axios from 'axios';
+import { Base_Url } from '../../redux/data';
+
 
 function Dashboard() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { user, token } = useSelector((state) => state.auth);
 
+  const [toastMessage, setToastMessage] = useState('');
+  const [showToast, setShowToast] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+
   useEffect(() => {
     // If not authenticated, redirect to login page
-    if (!token) {
+    if (!token && !loggingOut) {
       navigate('/login');
+    } else if (token) {
+      dispatch(fetchUserProfile());
     }
-  }, [token, navigate]);
+  }, [token, navigate, dispatch, loggingOut]);
 
   const handleLogoutClick = () => {
+    setShowLogoutModal(true);
+  };
+
+  const confirmLogout = () => {
+    setLoggingOut(true);
+    setShowLogoutModal(false);
     dispatch(logout());
-    navigate('/login');
+    navigate('/login', { state: { successMessage: 'account logout successfully..!' } });
+  };
+
+
+  // Chat state variables
+  const [sessions, setSessions] = useState([]);
+  const [currentSession, setCurrentSession] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [messageInput, setMessageInput] = useState('');
+  const [socket, setSocket] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [partnerTyping, setPartnerTyping] = useState(false);
+  const [role, setRole] = useState('partner_1');
+
+  const messageListRef = useRef(null);
+
+  // WebSocket message receiver setup helper
+  const setupSocketListeners = (ws) => {
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'connection_established') {
+        setRole(data.role);
+        setMessages(data.history || []);
+        setIsAnalyzing(data.session_status === 'analyzing');
+      } else if (data.type === 'message.sent') {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === data.message.id)) {
+            return prev;
+          }
+          return [...prev, data.message];
+        });
+        if (data.message.is_ai) {
+          setIsAnalyzing(false);
+        }
+      } else if (data.type === 'session.status.update') {
+        setCurrentSession(prev => prev ? { ...prev, status: data.status } : null);
+        setIsAnalyzing(data.status === 'analyzing');
+        setMessages(prev => [...prev, {
+          id: `sys-${Date.now()}`,
+          message: data.system_message || `Session status updated to ${data.status}`,
+          is_ai: true,
+          isSystem: true,
+          timestamp: new Date().toISOString()
+        }]);
+      } else if (data.type === 'ai.analyzing') {
+        setIsAnalyzing(true);
+      } else if (data.type === 'ai.response.ready') {
+        setIsAnalyzing(false);
+        setMessages(prev => [...prev, {
+          id: `sys-ready-${Date.now()}`,
+          message: `AI analysis complete! Resolution: ${data.analysis.resolution}`,
+          is_ai: true,
+          timestamp: new Date().toISOString()
+        }]);
+        setCurrentSession(prev => prev ? { ...prev, status: 'resolved' } : null);
+      } else if (data.type === 'partner.typing') {
+        setPartnerTyping(data.typing);
+      }
+    };
+
+    ws.onclose = () => {
+      setIsConnected(false);
+    };
+
+    ws.onerror = (err) => {
+      console.error("WebSocket error:", err);
+    };
+  };
+
+  const connectWebSocket = (sessionId) => {
+    if (socket) {
+      socket.close();
+    }
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsHost = Base_Url.replace(/^https?:\/\//, '');
+    const wsUrl = `${wsProtocol}//${wsHost}/ws/conflict/${sessionId}/?token=${token}`;
+
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      setIsConnected(true);
+    };
+    setupSocketListeners(ws);
+    setSocket(ws);
+  };
+
+  // Fetch conflict sessions on mount
+  useEffect(() => {
+    const fetchSessions = async () => {
+      try {
+        const res = await axios.get(`${Base_Url}/api/conflicts/sessions/`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.data && res.data.length > 0) {
+          setSessions(res.data);
+          const latest = res.data[0];
+          setCurrentSession(latest);
+          connectWebSocket(latest.id);
+        }
+      } catch (err) {
+        console.error("Failed to fetch sessions:", err);
+      }
+    };
+
+    if (token) {
+      fetchSessions();
+    }
+
+    return () => {
+      if (socket) {
+        socket.close();
+      }
+    };
+  }, [token]);
+
+  // Auto-scroll messages list to the bottom
+  useEffect(() => {
+    if (messageListRef.current) {
+      messageListRef.current.scrollTop = messageListRef.current.scrollHeight;
+    }
+  }, [messages, isAnalyzing, partnerTyping]);
+
+  const handleSendMessage = (e) => {
+    if (e) e.preventDefault();
+    if (!messageInput.trim()) return;
+
+    const text = messageInput.trim();
+
+    // Optimistically add user's message to list
+    const userMsg = {
+      id: `user-${Date.now()}`,
+      message: text,
+      is_ai: false,
+      sender_name: user?.username || 'You',
+      timestamp: new Date().toISOString()
+    };
+    setMessages(prev => [...prev, userMsg]);
+    setMessageInput('');
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: 'message.sent',
+        message: text
+      }));
+    } else {
+      handleStartSessionAndSend(text);
+    }
+  };
+
+  const handleStartSessionAndSend = async (initialMessage) => {
+    try {
+      const res = await axios.post(`${Base_Url}/api/conflicts/sessions/`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const newSession = res.data;
+      setSessions(prev => [newSession, ...prev]);
+      setCurrentSession(newSession);
+
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsHost = Base_Url.replace(/^https?:\/\//, '');
+      const wsUrl = `${wsProtocol}//${wsHost}/ws/conflict/${newSession.id}/?token=${token}`;
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        setIsConnected(true);
+        ws.send(JSON.stringify({
+          type: 'message.sent',
+          message: initialMessage
+        }));
+      };
+      setupSocketListeners(ws);
+      setSocket(ws);
+    } catch (err) {
+      console.error("Failed to start session:", err);
+      const errorMsg = err.response?.data?.detail || "Failed to start session.";
+      setToastMessage(errorMsg);
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 3000);
+    }
+  };
+
+  const handleSubmitPerspective = () => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: 'submit_individual_side'
+      }));
+
+      setToastMessage("Perspective submitted successfully!");
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 2500);
+    }
+  };
+
+  const handleCreateNewSession = async () => {
+    try {
+      const res = await axios.post(`${Base_Url}/api/conflicts/sessions/`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const newSession = res.data;
+      setSessions(prev => [newSession, ...prev]);
+      setCurrentSession(newSession);
+      setMessages([]);
+      connectWebSocket(newSession.id);
+      setToastMessage("New conflict session started!");
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 2500);
+    } catch (err) {
+      const errorMsg = err.response?.data?.detail || "Failed to create new session.";
+      setToastMessage(errorMsg);
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 3000);
+    }
+  };
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [editUsername, setEditUsername] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editOccupation, setEditOccupation] = useState('');
+  const [editGender, setEditGender] = useState('male');
+  const [editProfilePic, setEditProfilePic] = useState(null);
+  const [updating, setUpdating] = useState(false);
+  const [formSuccess, setFormSuccess] = useState('');
+  const [formError, setFormError] = useState('');
+
+  useEffect(() => {
+    if (user) {
+      setEditUsername(user.username || '');
+      setEditEmail(user.email || '');
+      setEditPhone(user.phone || '');
+      setEditOccupation(user.occupation || '');
+      setEditGender(user.gender || 'male');
+    }
+  }, [user, isEditing]);
+
+  const handleEditSubmit = (e) => {
+    e.preventDefault();
+    setUpdating(true);
+    setFormSuccess('');
+    setFormError('');
+
+    const formData = new FormData();
+    formData.append('username', editUsername);
+    formData.append('email', editEmail);
+    formData.append('phone', editPhone);
+    formData.append('occupation', editOccupation);
+    formData.append('gender', editGender);
+    if (editProfilePic) {
+      formData.append('profile_pic', editProfilePic);
+    }
+
+    dispatch(updateUserProfile(formData))
+      .unwrap()
+      .then(() => {
+        setFormSuccess('Profile updated successfully!');
+        setUpdating(false);
+        setTimeout(() => {
+          setIsEditing(false);
+          setFormSuccess('');
+        }, 1500);
+      })
+      .catch((err) => {
+        setFormError(err || 'Failed to update profile.');
+        setUpdating(false);
+      });
+  };
+
+  const handleCopyLink = () => {
+    if (!user?.invite_token) {
+      setToastMessage("Invite token not found. Please refresh.");
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 2500);
+      return;
+    }
+    const inviteUrl = `${window.location.origin}/register?invite_code=${user.invite_token}`;
+    navigator.clipboard.writeText(inviteUrl)
+      .then(() => {
+        setToastMessage("Link copied!");
+        setShowToast(true);
+        setTimeout(() => setShowToast(false), 2500);
+      })
+      .catch((err) => {
+        console.error("Failed to copy link: ", err);
+      });
   };
 
   if (!token) {
@@ -73,8 +373,17 @@ function Dashboard() {
                   <i className="ti ti-device-heart-monitor fs-one s2-color"></i>
                 </div>
                 <h3>Partner Connected</h3>
-                <h2 className="display-six s2-color mt-2">Linked</h2>
-                <p className="fs-nine text-muted mt-2">Your profile is connected. Share advice cards and resolution results instantly.</p>
+                {user?.is_partner_added ? (
+                  <>
+                    <h2 className="display-six s2-color mt-2">Linked</h2>
+                    <p className="fs-nine text-muted mt-2">Your profile is connected. Share advice cards and resolution results instantly.</p>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="display-six text-danger mt-2">Pending</h2>
+                    <p className="fs-nine text-muted mt-2">Partner has not created their account yet. Share the invite link to connect.</p>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -83,86 +392,472 @@ function Dashboard() {
           <div className="row gy-5">
             {/* Left Main Pane */}
             <div className="col-lg-8">
-              <div className="coping_divorce__fitem border-color5 p-5 p-md-7 rounded-3 position-relative overflow-hidden bg-white mb-6">
-                <div className="balancing_work__item">
-                  <div className="balancing_work__part d-flex flex-wrap align-items-center justify-content-between gap-3 mb-5">
-                    <span className="py-1 px-3 bg5-color rounded-5">AI Agent</span>
-                    <span className="p4-color">Last updated: Just now</span>
-                  </div>
-                  <h2 className="mb-4">Analyze a Conflict Session</h2>
-                  <p className="fs-ten mb-5">
-                    Upload chat logs, couples dialogue, or a brief description of a recent conflict. 
-                    Our LangGraph AI pipeline will perform semantic analysis to identify cognitive distortions, emotional triggers, and construct healthy talking points.
-                  </p>
-                  <div className="d-flex flex-wrap gap-4 align-items-center">
-                    <Link to="/discussion" className="cmn-btn p-4 d-center">
-                      Launch Resolution Session <i className="ti ti-arrow-badge-right fs-four ms-2"></i>
-                    </Link>
-                    <Link to="/advice" className="s2-color border-btom pb-1 fw-bold">
-                      Read Relationship Tips
-                    </Link>
-                  </div>
-                </div>
-              </div>
+
 
               {/* Recent Suggestions */}
-              <div className="stories_podcast__card border-color3 p-5 rounded-4 bg-white">
-                <h3 className="mb-4">Suggested Actions For This Week</h3>
-                <ul className="d-flex flex-column gap-3">
-                  <li className="d-flex align-items-start gap-3 p-3 bg1-color rounded-3">
-                    <i className="ti ti-circle-check-filled s2-color fs-four mt-1"></i>
-                    <div>
-                      <h5 className="mb-1">Schedule a 15-minute Check-in</h5>
-                      <p className="fs-nine text-muted">A short unstructured dialogue about daily stresses helps align expectations before arguments arise.</p>
+              <div className="stories_podcast__card border-color3 p-4 p-md-5 rounded-4 bg-white shadow-sm mb-4">
+                {/* Chat Header */}
+                <div className="d-flex align-items-center justify-content-between mb-4 border-bottom pb-3">
+                  <div className="d-flex align-items-center gap-3">
+                    <div className="bg-primary bg-opacity-10 p-2 rounded-3 text-primary" style={{ backgroundColor: 'rgba(25, 15, 71, 0.1)', color: 'var(--p1-color)' }}>
+                      <i className="ti ti-brand-messenger fs-three" style={{ color: 'var(--p1-color)' }}></i>
                     </div>
-                  </li>
-                  <li className="d-flex align-items-start gap-3 p-3 bg1-color rounded-3">
-                    <i className="ti ti-circle-check-filled s2-color fs-four mt-1"></i>
                     <div>
-                      <h5 className="mb-1">Try the "Active Listening" Exercise</h5>
-                      <p className="fs-nine text-muted">Read advice on how to repeat back your partner's statement to confirm alignment before replying.</p>
+                      <h4 className="mb-0">Chat with Lerio AI</h4>
+                      <span className="fs-ten text-muted">
+                        {currentSession ? `Session #${currentSession.id} (${currentSession.status})` : 'No active session'}
+                      </span>
                     </div>
-                  </li>
-                </ul>
+                  </div>
+                  {currentSession && (currentSession.status === 'resolved' || currentSession.status === 'escalated') && (
+                    <button 
+                      onClick={handleCreateNewSession}
+                      className="btn btn-outline-primary btn-sm py-2 px-3 rounded-3"
+                      style={{ borderColor: 'var(--p1-color)', color: 'var(--p1-color)' }}
+                    >
+                      <i className="ti ti-plus"></i> New Conflict Session
+                    </button>
+                  )}
+                </div>
+
+                {/* Chat Messages Area */}
+                <div 
+                  ref={messageListRef}
+                  style={{ 
+                    height: '380px', 
+                    overflowY: 'auto', 
+                    paddingRight: '10px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '15px'
+                  }}
+                  className="chat-messages-container mb-4"
+                >
+                  {messages.length === 0 ? (
+                    <div className="d-flex flex-column align-items-center justify-content-center h-100 text-center text-muted">
+                      <i className="ti ti-message-chatbot fs-one mb-2 opacity-50"></i>
+                      <h5>Start a chat with Lerio</h5>
+                      <p className="fs-ten mx-auto" style={{ maxWidth: '300px' }}>Explain the relationship situation or conflict you are experiencing to get counsel.</p>
+                    </div>
+                  ) : (
+                    messages.map((msg, index) => {
+                      if (msg.isSystem) {
+                        return (
+                          <div key={msg.id || index} className="text-center my-2">
+                            <span className="bg-light text-muted px-3 py-1 rounded-pill fs-nine border border-color3">
+                              {msg.message}
+                            </span>
+                          </div>
+                        );
+                      }
+
+                      // User messages are on the LEFT, AI response on the RIGHT
+                      const isUser = !msg.is_ai;
+                      
+                      return (
+                        <div 
+                          key={msg.id || index} 
+                          className={`d-flex flex-column ${isUser ? 'align-items-start' : 'align-items-end'}`}
+                          style={{ width: '100%' }}
+                        >
+                          {/* Bubble Container */}
+                          <div className="d-flex align-items-end gap-2" style={{ maxWidth: '75%', alignSelf: isUser ? 'flex-start' : 'flex-end' }}>
+                            {isUser && (
+                              <img 
+                                src={user?.profile_pic || "src/assets/images/avatar2.png"} 
+                                className="rounded-circle border border-primary" 
+                                style={{ width: '28px', height: '28px', objectFit: 'cover' }} 
+                                alt="U"
+                              />
+                            )}
+                            
+                            <div 
+                              className="p-3"
+                              style={{
+                                backgroundColor: isUser ? '#f0f2f5' : 'var(--p1-color, #190F47)',
+                                color: isUser ? '#190F47' : '#ffffff',
+                                borderRadius: isUser ? '16px 16px 16px 4px' : '16px 16px 4px 16px',
+                                boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+                                fontSize: '14px',
+                                lineHeight: '1.5',
+                                wordBreak: 'break-word',
+                                textAlign: 'left'
+                              }}
+                            >
+                              {msg.message}
+                            </div>
+
+                            {!isUser && (
+                              <div 
+                                className="rounded-circle d-flex align-items-center justify-content-center"
+                                style={{ width: '28px', height: '28px', border: '1px solid var(--p1-color)', backgroundColor: 'rgba(25, 15, 71, 0.1)' }}
+                              >
+                                <i className="ti ti-robot s2-color" style={{ fontSize: '14px', color: 'var(--p1-color)' }}></i>
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Sender and Time */}
+                          <span 
+                            className="text-muted mt-1 px-2" 
+                            style={{ fontSize: '10px' }}
+                          >
+                            {isUser ? (msg.sender_name || 'You') : 'Lerio AI'} • {msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Just now'}
+                          </span>
+                        </div>
+                      );
+                    })
+                  )}
+
+                  {isAnalyzing && (
+                    <div className="d-flex flex-column align-items-end" style={{ width: '100%' }}>
+                      <div className="d-flex align-items-end gap-2" style={{ maxWidth: '75%', alignSelf: 'flex-end' }}>
+                        <div className="p-3 rounded-4 text-muted d-flex align-items-center gap-2" style={{ borderRadius: '16px 16px 4px 16px', backgroundColor: 'rgba(25, 15, 71, 0.05)' }}>
+                          <span className="spinner-border spinner-border-sm text-primary" role="status" style={{ color: 'var(--p1-color)' }}></span>
+                          <span className="fs-ten">Lerio is analyzing your conflict...</span>
+                        </div>
+                        <div 
+                          className="rounded-circle d-flex align-items-center justify-content-center"
+                          style={{ width: '28px', height: '28px', border: '1px solid var(--p1-color)', backgroundColor: 'rgba(25, 15, 71, 0.1)' }}
+                        >
+                          <i className="ti ti-robot s2-color" style={{ fontSize: '14px', color: 'var(--p1-color)' }}></i>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {partnerTyping && (
+                    <div className="d-flex flex-column align-items-start" style={{ width: '100%' }}>
+                      <span className="text-muted fs-nine px-2 mb-1">Partner is typing...</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Chat Input Area */}
+                <form onSubmit={handleSendMessage}>
+                  <div className="form-group mb-3">
+                    <textarea 
+                      rows="2" 
+                      className="form-control p-3 border rounded-3 fs-nine"
+                      placeholder={
+                        isAnalyzing 
+                          ? "AI is analyzing, inputs are disabled..." 
+                          : currentSession?.status === 'analyzing'
+                          ? "AI is analyzing, please wait..."
+                          : "Write your message to Lerio..."
+                      }
+                      value={messageInput}
+                      onChange={(e) => {
+                        setMessageInput(e.target.value);
+                        if (socket && socket.readyState === WebSocket.OPEN) {
+                          socket.send(JSON.stringify({ type: 'partner.typing', typing: e.target.value.length > 0 }));
+                        }
+                      }}
+                      onBlur={() => {
+                        if (socket && socket.readyState === WebSocket.OPEN) {
+                          socket.send(JSON.stringify({ type: 'partner.typing', typing: false }));
+                        }
+                      }}
+                      disabled={isAnalyzing || currentSession?.status === 'analyzing'}
+                      style={{ resize: 'none', borderColor: '#e2e8f0' }}
+                    ></textarea>
+                  </div>
+
+                  <div className="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                    {/* Submit Side Button for collecting phase */}
+                    {currentSession?.status === 'collecting' ? (
+                      <button
+                        type="button"
+                        onClick={handleSubmitPerspective}
+                        className="btn btn-outline-danger py-2 px-3 rounded-3 fs-nine d-flex align-items-center gap-2"
+                      >
+                        <i className="ti ti-circle-check"></i> Submit My Side to AI
+                      </button>
+                    ) : <div />}
+
+                    <button 
+                      type="submit" 
+                      className="cmn-btn px-4 py-2 rounded-3 d-flex align-items-center gap-2"
+                      disabled={!messageInput.trim() || isAnalyzing || currentSession?.status === 'analyzing'}
+                    >
+                      <i className="ti ti-send"></i> Send
+                    </button>
+                  </div>
+                </form>
               </div>
             </div>
 
             {/* Right Pane / Profile Details */}
             <div className="col-lg-4">
               <div className="coping_divorce__fitem bgx-color border-bgx p-5 p-md-6 rounded-3 bg-white">
-                <h3 className="mb-4">Your Profile Details</h3>
-                <div className="d-flex flex-column gap-4">
-                  <div className="d-flex align-items-center gap-3">
-                    <img src="src/assets/images/avatar2.png" className="rounded-5 border border-2 border-primary" style={{ width: '60px' }} alt="Profile" />
-                    <div>
-                      <h5 className="mb-0">{user?.username || 'User'}</h5>
-                      <span className="text-muted fs-nine">Member ID: #{Math.floor(100000 + Math.random() * 900000)}</span>
-                    </div>
-                  </div>
-                  
-                  <hr className="my-1" />
-
-                  <div className="d-flex flex-column gap-2 fs-nine">
-                    <div className="d-flex justify-content-between">
-                      <span className="fw-bold">User Name:</span>
-                      <span>{user?.username}</span>
-                    </div>
-                    <div className="d-flex justify-content-between">
-                      <span className="fw-bold">Account Status:</span>
-                      <span className="text-success">Active</span>
-                    </div>
-                  </div>
-                  
-                  <Link to="/advice" className="cmn-btn second-alt py-3 w-100 text-center rounded-4">
-                    Browse Advisors
-                  </Link>
+                <div className="d-flex align-items-center justify-content-between mb-4">
+                  <h3 className="mb-0">Your Profile Details</h3>
+                  {!isEditing && (
+                    <button
+                      onClick={() => setIsEditing(true)}
+                      className="border-0 bg-transparent text-primary p-0"
+                      title="Edit Profile"
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <i className="ti ti-edit" style={{ fontSize: '20px', color: 'var(--p1-color)' }}></i>
+                    </button>
+                  )}
                 </div>
+
+                {isEditing ? (
+                  <form onSubmit={handleEditSubmit} className="d-flex flex-column gap-3 text-start">
+                    {formError && (
+                      <div className="alert alert-danger py-2 px-3 rounded-3" role="alert" style={{ fontSize: '13px' }}>
+                        {formError}
+                      </div>
+                    )}
+                    {formSuccess && (
+                      <div className="alert alert-success py-2 px-3 rounded-3" role="alert" style={{ fontSize: '13px' }}>
+                        {formSuccess}
+                      </div>
+                    )}
+
+                    <div className="form-group d-flex flex-column gap-1">
+                      <label className="fw_500 fs-seven mb-0" htmlFor="editUsername" style={{ color: '#190F47' }}>Username</label>
+                      <input
+                        id="editUsername"
+                        type="text"
+                        className="form-control py-3 px-4 rounded-3 fs-seven"
+                        value={editUsername}
+                        onChange={(e) => setEditUsername(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    <div className="form-group d-flex flex-column gap-1">
+                      <label className="fw_500 fs-seven mb-0" htmlFor="editEmail" style={{ color: '#190F47' }}>Email</label>
+                      <input
+                        id="editEmail"
+                        type="email"
+                        className="form-control py-3 px-4 rounded-3 fs-seven"
+                        value={editEmail}
+                        onChange={(e) => setEditEmail(e.target.value)}
+                        required
+                      />
+                    </div>
+
+                    <div className="form-group d-flex flex-column gap-1">
+                      <label className="fw_500 fs-seven mb-0" htmlFor="editPhone" style={{ color: '#190F47' }}>Phone Number</label>
+                      <input
+                        id="editPhone"
+                        type="text"
+                        className="form-control py-3 px-4 rounded-3 fs-seven"
+                        value={editPhone}
+                        onChange={(e) => setEditPhone(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="form-group d-flex flex-column gap-1">
+                      <label className="fw_500 fs-seven mb-0" htmlFor="editOccupation" style={{ color: '#190F47' }}>Occupation</label>
+                      <input
+                        id="editOccupation"
+                        type="text"
+                        className="form-control py-3 px-4 rounded-3 fs-seven"
+                        value={editOccupation}
+                        onChange={(e) => setEditOccupation(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="form-group d-flex flex-column gap-1">
+                      <label className="fw_500 fs-seven mb-1" style={{ color: '#190F47' }}>Gender</label>
+                      <div className="d-flex align-items-center gap-4 mt-1">
+                        <div className="form-check d-flex align-items-center gap-2">
+                          <input
+                            className="form-check-input"
+                            type="radio"
+                            name="editGender"
+                            id="editGenderMale"
+                            value="male"
+                            checked={editGender === 'male'}
+                            onChange={(e) => setEditGender(e.target.value)}
+                            style={{ width: '14px', height: '14px', cursor: 'pointer', margin: 0 }}
+                          />
+                          <label className="form-check-label mb-0 fs-seven" htmlFor="editGenderMale" style={{ cursor: 'pointer' }}>
+                            Male
+                          </label>
+                        </div>
+                        <div className="form-check d-flex align-items-center gap-2">
+                          <input
+                            className="form-check-input"
+                            type="radio"
+                            name="editGender"
+                            id="editGenderFemale"
+                            value="female"
+                            checked={editGender === 'female'}
+                            onChange={(e) => setEditGender(e.target.value)}
+                            style={{ width: '14px', height: '14px', cursor: 'pointer', margin: 0 }}
+                          />
+                          <label className="form-check-label mb-0 fs-seven" htmlFor="editGenderFemale" style={{ cursor: 'pointer' }}>
+                            Female
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="form-group d-flex flex-column gap-1">
+                      <label className="fw_500 fs-seven mb-0" htmlFor="editProfilePic" style={{ color: '#190F47' }}>Profile Picture</label>
+                      <input
+                        id="editProfilePic"
+                        type="file"
+                        className="form-control py-2 px-3 rounded-3 fs-seven"
+                        accept="image/*"
+                        onChange={(e) => setEditProfilePic(e.target.files[0])}
+                      />
+                    </div>
+
+                    <div className="d-flex gap-2 mt-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsEditing(false)}
+                        className="btn btn-secondary py-2 px-4 rounded-3 fs-seven w-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={updating}
+                        className="cmn-btn border-0 py-2 px-4 rounded-3 fs-seven w-50 d-flex align-items-center gap-2 justify-content-center"
+                      >
+                        {updating ? (
+                          <>
+                            <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            Saving...
+                          </>
+                        ) : (
+                          'Save Changes'
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="d-flex flex-column gap-4">
+                    <div className="d-flex align-items-center justify-content-between gap-3">
+                      <div className="d-flex align-items-center gap-3">
+                        <img
+                          src={user?.profile_pic || "src/assets/images/avatar2.png"}
+                          className="rounded-5 border border-2 border-primary"
+                          style={{ width: '60px', height: '60px', objectFit: 'cover' }}
+                          alt="Profile"
+                        />
+                        <div>
+                          <h5 className="mb-0">{user?.username || 'User'}</h5>
+                          <span className="text-muted fs-nine">Member ID: #{Math.floor(100000 + Math.random() * 900000)}</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleCopyLink}
+                        className="cmn-btn border-0 py-2 px-3 rounded-3 d-flex align-items-center gap-1"
+                        style={{ fontSize: '12px' }}
+                      >
+                        <i className="ti ti-copy"></i>
+                        Copy Link
+                      </button>
+                    </div>
+
+                    <hr className="my-1" />
+
+                    <div className="d-flex flex-column gap-2 fs-nine">
+                      <div className="d-flex justify-content-between">
+                        <span className="fw-bold">User Name:</span>
+                        <span>{user?.username}</span>
+                      </div>
+                      <div className="d-flex justify-content-between">
+                        <span className="fw-bold">Email:</span>
+                        <span>{user?.email}</span>
+                      </div>
+                      <div className="d-flex justify-content-between">
+                        <span className="fw-bold">Phone:</span>
+                        <span>{user?.phone || 'Not set'}</span>
+                      </div>
+                      <div className="d-flex justify-content-between">
+                        <span className="fw-bold">Gender:</span>
+                        <span className="text-capitalize">{user?.gender || 'Not set'}</span>
+                      </div>
+                      <div className="d-flex justify-content-between">
+                        <span className="fw-bold">Occupation:</span>
+                        <span>{user?.occupation || 'Not set'}</span>
+                      </div>
+                      <div className="d-flex justify-content-between">
+                        <span className="fw-bold">Account Status:</span>
+                        <span className="text-success">Active</span>
+                      </div>
+                    </div>
+
+                    <Link to="/advice" className="cmn-btn second-alt py-3 w-100 text-center rounded-4">
+                      Browse Advisors
+                    </Link>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         </div>
       </section>
       {/* Dashboard Area Ends */}
+      {showToast && (
+        <div
+          className="position-fixed bottom-0 start-50 translate-middle-x mb-4 py-2 px-4 rounded-3 shadow-lg d-flex align-items-center gap-2"
+          style={{
+            backgroundColor: '#190F47',
+            color: '#ffffff',
+            zIndex: 1050,
+            fontSize: '14px',
+            animation: 'fadeInUp 0.3s ease-out',
+            border: '1px solid rgba(255,255,255,0.1)'
+          }}
+        >
+          <i className="ti ti-circle-check-filled" style={{ color: '#28a745', fontSize: '18px' }}></i>
+          <span style={{ color: '#ffffff' }}>{toastMessage}</span>
+        </div>
+      )}
+
+      {showLogoutModal && (
+        <div
+          className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center"
+          style={{
+            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            zIndex: 9999,
+            backdropFilter: 'blur(4px)',
+            transition: 'all 0.3s ease'
+          }}
+        >
+          <div
+            className="p-5 rounded-20 bg-white shadow-lg text-center"
+            style={{
+              maxWidth: '400px',
+              width: '90%',
+              border: '1px solid rgba(0, 0, 0, 0.1)'
+            }}
+          >
+            <div className="d-flex align-items-center justify-content-center rounded-circle mx-auto mb-4" style={{ width: '60px', height: '60px', backgroundColor: 'rgba(236, 96, 79, 0.1)' }}>
+              <i className="ti ti-logout" style={{ fontSize: '30px', color: '#EC604F' }}></i>
+            </div>
+            <h3 className="mb-2" style={{ color: '#190F47' }}>Logout</h3>
+            <p className="text-muted mb-4 fs-nine">Are you sure you want to logout from your account?</p>
+            <div className="d-flex gap-3 justify-content-center">
+              <button
+                onClick={() => setShowLogoutModal(false)}
+                className="cmn-btn border-0 py-2 px-4 rounded-3 text-white"
+                style={{ backgroundColor: '#6c757d', minWidth: '100px' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmLogout}
+                className="cmn-btn border-0 py-2 px-4 rounded-3 text-white"
+                style={{ backgroundColor: '#EC604F', minWidth: '100px' }}
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

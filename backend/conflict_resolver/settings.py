@@ -157,3 +157,7 @@ else:
 # CORS Configuration
 CORS_ALLOW_ALL_ORIGINS = True  # For development ease, adjust as necessary
 CORS_ALLOW_CREDENTIALS = True
+
+# Media files
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'

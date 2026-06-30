@@ -77,6 +77,23 @@ class UsersAuthTests(APITestCase):
         profile_res = self.client.get(self.profile_url)
         self.assertEqual(profile_res.status_code, status.HTTP_200_OK)
         self.assertEqual(profile_res.data["username"], "testuser")
+        self.assertFalse(profile_res.data["is_partner_added"])
+
+        # Register a partner using the invite token of testuser
+        partner_data = {
+            "username": "partneruser",
+            "password": "testpassword",
+            "email": "partner@example.com",
+            "invite_code": str(user.invite_token),
+            "relationship_duration": 3
+        }
+        reg_res = self.client.post(self.register_url, partner_data, format='json')
+        self.assertEqual(reg_res.status_code, status.HTTP_201_CREATED)
+
+        # Retrieve profile again - now is_partner_added should be True
+        profile_res = self.client.get(self.profile_url)
+        self.assertEqual(profile_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(profile_res.data["is_partner_added"])
 
         # Access couple endpoint
         couple_res = self.client.get(self.couple_url)
