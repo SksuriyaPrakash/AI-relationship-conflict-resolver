@@ -12,39 +12,22 @@ class MockLLM:
 
     def invoke(self, messages):
         content = ""
+        user_content = ""
         for m in messages:
             content += str(m.content) + "\n"
+            if isinstance(m, HumanMessage):
+                user_content += str(m.content) + "\n"
         
         content_lower = content.lower()
+        user_content_lower = user_content.lower()
         
-        if "escalation" in content_lower or "safety check" in content_lower:
-            # Check if actual escalation words are in the message
-            # For mock testing: if 'kill' or 'violence' is in prompt, return true
-            if any(k in content_lower for k in ["kill", "violence", "abuse", "suicide", "கொலை"]):
+        if "safety detection" in content_lower:
+            # Check if actual escalation words are in the user's message, not the system prompt
+            if any(k in user_content_lower for k in ["kill", "violence", "abuse", "suicide", "கொலை"]):
                 return HumanMessage(content="true")
             return HumanMessage(content="false")
             
-        elif "emotion" in content_lower or "extract emotions" in content_lower:
-            # Return json mapping emotions to intensity
-            return HumanMessage(content=json.dumps({
-                "frustration": 7.0,
-                "anxiety": 5.0,
-                "sadness": 4.0,
-                "hopeful": 2.0
-            }))
-            
-        elif "classify" in content_lower or "conflict type" in content_lower:
-            return HumanMessage(content="communication")
-            
-        elif "paraphrase" in content_lower or "perspective" in content_lower:
-            return HumanMessage(content="Partner feels unheard and overwhelmed due to lack of coordination on shared responsibilities.")
-            
-        elif "root cause" in content_lower:
-            return HumanMessage(content="Misaligned communication channels and expectations regarding household workload and support systems.")
-            
-        else:
-        else:
-            # Resolution generation (mock JSON)
+        elif "cross-reference" in content_lower:
             return HumanMessage(content=json.dumps({
                 "match_percentage": 80,
                 "severity": "low",
@@ -53,13 +36,22 @@ class MockLLM:
                 "advice_a": "Listen to your partner without interrupting.",
                 "advice_b": "Express your feelings calmly using 'I' statements."
             }))
+            
+        elif "open-ended question" in content_lower:
+            return HumanMessage(content="Can you tell me more about how that made you feel?")
+            
+        elif "clarification question" in content_lower:
+            return HumanMessage(content="I understand this is difficult. Let's look at how we can address this.")
+            
+        else:
+            return HumanMessage(content="Mock response.")
 
 def get_llm():
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return MockLLM()
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-pro",
+         model="gemini-2.5-flash",
         google_api_key=api_key,
         temperature=0.2
     )

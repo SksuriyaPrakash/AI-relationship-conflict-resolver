@@ -7,7 +7,7 @@ from django.db.models import Q
 from django.conf import settings
 from .models import ConflictSession, ChatMessage, AIAnalysisResult, ProgressLog
 from users.models import CoupleProfile
-from ai_engine.nodes import generate_paraphrased_perspective, get_llm
+from ai_engine.nodes import get_llm
 from ai_engine.workflow import conflict_app
 from ai_engine.rag_store import rag_store
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -539,6 +539,20 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({
             "type": "ai.response.ready",
             "analysis": event["analysis"]
+        })
+
+    async def session_status_update(self, event):
+        await self.send_json({
+            "type": "session.status.update",
+            "status": event.get("status"),
+            "system_message": event.get("system_message", "")
+        })
+
+    async def broadcast_status(self, event):
+        await self.send_json({
+            "type": "session.status.update",
+            "status": event.get("status"),
+            "system_message": event.get("system_message", "")
         })
 
     # --- Database Operations (database_sync_to_async wrappers) ---

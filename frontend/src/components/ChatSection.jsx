@@ -193,12 +193,17 @@ function ChatSection({
             value={messageInput}
             onChange={handleTextareaChange}
             onBlur={handleTextareaBlur}
-            disabled={isAnalyzing || currentSession?.status === 'analyzing' || hasSentMessage}
+            disabled={!user?.is_partner_added || isAnalyzing || currentSession?.status === 'analyzing' || hasSentMessage}
             style={{ resize: 'none', borderColor: '#e2e8f0' }}
           ></textarea>
         </div>
 
-        {hasSentMessage ? (
+        {!user?.is_partner_added ? (
+          <div className="d-flex align-items-center gap-2 p-3 rounded-3 w-100 bg-warning bg-opacity-10 text-warning border border-warning" style={{ color: '#856404' }}>
+            <i className="ti ti-alert-circle fs-four"></i>
+            <span className="fs-nine fw_500">First connect with your partner to start resolving conflicts!</span>
+          </div>
+        ) : hasSentMessage ? (
           <div className="d-flex align-items-center gap-2 p-3 rounded-3 w-100" style={{ backgroundColor: 'rgba(25, 15, 71, 0.05)', color: 'var(--p1-color)' }}>
             <span className="spinner-border spinner-border-sm text-primary" role="status" style={{ color: 'var(--p1-color)' }}></span>
             <span className="fs-nine fw_500">Waiting for partner's message to begin AI analysis...</span>
