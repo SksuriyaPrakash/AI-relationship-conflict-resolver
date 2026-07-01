@@ -65,8 +65,44 @@ class DailyCheckinViewSet(viewsets.ModelViewSet, CoupleContextMixin):
         return DailyCheckin.objects.filter(session__couple=couple).order_by('-date')
 
     def perform_create(self, serializer):
+        from django.utils import timezone
+        
         # Default user to request user
-        serializer.save(user=self.request.user)
+        checkin = serializer.save(user=self.request.user)
+        session = checkin.session
+        couple = session.couple
+        today = timezone.now().date()
+        
+        p1_checkin = DailyCheckin.objects.filter(session=session, user=couple.partner_1, date=today).first()
+        p2_checkin = DailyCheckin.objects.filter(session=session, user=couple.partner_2, date=today).first()
+        
+        # If either says "partial" or "no", reopen immediately
+        if checkin.status in ["partial", "no"]:
+            session.status = "collecting"
+            session.save()
+            ProgressLog.objects.create(
+                session=session,
+                percentage=0,
+                milestone="Conflict reopened based on daily checkin."
+            )
+        elif p1_checkin and p2_checkin:
+            if p1_checkin.status == "resolved" and p2_checkin.status == "resolved":
+                session.status = "resolved"
+                session.save()
+                
+                severity_deduction = 10
+                if hasattr(session, 'analysis_result'):
+                    severity = session.analysis_result.severity
+                    if severity == "critical": severity_deduction = 20
+                    elif severity == "high": severity_deduction = 15
+                    elif severity == "medium": severity_deduction = 10
+                    elif severity == "low": severity_deduction = 5
+                    
+                ProgressLog.objects.create(
+                    session=session,
+                    percentage=severity_deduction,
+                    milestone="Both partners marked conflict as resolved."
+                )
 
 class ProgressLogViewSet(viewsets.ReadOnlyModelViewSet, CoupleContextMixin):
     serializer_class = ProgressLogSerializer

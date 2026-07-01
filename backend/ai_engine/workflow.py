@@ -6,22 +6,19 @@ class ConflictState(TypedDict):
     session_id: str
     husband_messages: List[str]
     wife_messages: List[str]
-    husband_emotions: Dict[str, float]
-    wife_emotions: Dict[str, float]
+    match_percentage: int
+    severity: str
     conflict_type: str
     root_cause: str
     escalation_flag: bool
-    resolution: str
-    communication_script: str
+    advice_a: str
+    advice_b: str
     language: str  # "english" or "tamil"
     current_phase: str
 
 from ai_engine.nodes import (
     escalation_detector,
-    emotion_analyzer,
-    conflict_classifier,
-    root_cause_analyzer,
-    resolution_generator,
+    cross_reference_analyzer,
 )
 
 def check_escalation(state: ConflictState) -> str:
@@ -35,10 +32,7 @@ def build_graph():
 
     # Add Nodes
     workflow.add_node("escalation_detector", escalation_detector)
-    workflow.add_node("emotion_analyzer", emotion_analyzer)
-    workflow.add_node("conflict_classifier", conflict_classifier)
-    workflow.add_node("root_cause_analyzer", root_cause_analyzer)
-    workflow.add_node("resolution_generator", resolution_generator)
+    workflow.add_node("cross_reference_analyzer", cross_reference_analyzer)
 
     # Connection flows
     workflow.set_entry_point("escalation_detector")
@@ -48,14 +42,11 @@ def build_graph():
         check_escalation,
         {
             "escalated": END,
-            "clear": "emotion_analyzer"
+            "clear": "cross_reference_analyzer"
         }
     )
     
-    workflow.add_edge("emotion_analyzer", "conflict_classifier")
-    workflow.add_edge("conflict_classifier", "root_cause_analyzer")
-    workflow.add_edge("root_cause_analyzer", "resolution_generator")
-    workflow.add_edge("resolution_generator", END)
+    workflow.add_edge("cross_reference_analyzer", END)
 
     return workflow.compile()
 

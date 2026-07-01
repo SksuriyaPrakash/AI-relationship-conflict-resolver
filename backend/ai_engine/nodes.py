@@ -43,10 +43,15 @@ class MockLLM:
             return HumanMessage(content="Misaligned communication channels and expectations regarding household workload and support systems.")
             
         else:
-            # Resolution generation
+        else:
+            # Resolution generation (mock JSON)
             return HumanMessage(content=json.dumps({
-                "resolution": "1. Schedule a weekly sync-up to organize chore distributions.\n2. Express appreciation for daily tasks.\n3. Take breaks during discussions if emotions run high.",
-                "communication_script": "I feel overwhelmed with chores. Can we plan our tasks together this weekend so I feel more supported?"
+                "match_percentage": 80,
+                "severity": "low",
+                "conflict_type": "communication",
+                "root_cause": "Misaligned communication channels and expectations.",
+                "advice_a": "Listen to your partner without interrupting.",
+                "advice_b": "Express your feelings calmly using 'I' statements."
             }))
 
 def get_llm():
@@ -59,28 +64,19 @@ def get_llm():
         temperature=0.2
     )
 
-# Node 5: escalation_detector (HYBRID)
-# We place this first or run it as Node 1 for safety
+# Node 1: escalation_detector
 def escalation_detector(state: Dict[str, Any]) -> Dict[str, Any]:
-    keywords = ["abuse", "hit", "violence", "suicide", "disappear", "hurt", "kill", "scared", "trapped", "கொலை", "அடிக்கிறான்", "பயமா இருக்கு"]
-    
     # Collect all messages
     all_msgs = state.get("husband_messages", []) + state.get("wife_messages", [])
-    combined_text = " ".join(all_msgs).lower()
+    combined_text = " ".join(all_msgs)
     
-    # Layer 1: Keyword Check
-    keyword_triggered = any(k in combined_text for k in keywords)
-    
-    if not keyword_triggered:
-        return {"escalation_flag": False}
-        
-    # Layer 2: Gemini Context Verification
+    # Semantic Gemini Context Verification for Abuse/Safety Check
     llm = get_llm()
     prompt = [
         SystemMessage(content=(
-            "You are an escalation detection safety system for a couples therapy bot. "
-            "Analyze the messages and verify if there is an active threat of abuse, physical violence, "
-            "suicide, or immediate danger. "
+            "You are a safety detection system for a couples therapy bot. "
+            "Analyze the messages and use your semantic understanding to verify if either message contains "
+            "signs of physical abuse, severe violence, suicide threats, or serious safety issues. "
             "Reply with exactly 'true' or 'false'."
         )),
         HumanMessage(content=f"Analyze these messages:\n{combined_text}")
@@ -95,155 +91,57 @@ def escalation_detector(state: Dict[str, Any]) -> Dict[str, Any]:
 
     return {"escalation_flag": is_escalated}
 
-# Node 1: emotion_analyzer
-def emotion_analyzer(state: Dict[str, Any]) -> Dict[str, Any]:
-    llm = get_llm()
-    
-    def analyze_messages(msgs):
-        if not msgs:
-            return {}
-        text = " | ".join(msgs)
-        prompt = [
-            SystemMessage(content=(
-                "Analyze the user's relationship conflict messages. Extract the key emotions, tone, and intensity (1-10). "
-                "Output the results in raw JSON format (e.g. {'anger': 8.0, 'sadness': 5.0}). No formatting markdown."
-            )),
-            HumanMessage(content=text)
-        ]
-        try:
-            response = llm.invoke(prompt)
-            # Remove any markdown backticks from JSON if returned
-            clean_content = response.content.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_content)
-        except Exception:
-            return {"frustration": 5.0}  # Fallback
-
-    husband_emotions = analyze_messages(state.get("husband_messages", []))
-    wife_emotions = analyze_messages(state.get("wife_messages", []))
-    
-    return {
-        "husband_emotions": husband_emotions,
-        "wife_emotions": wife_emotions
-    }
-
-# Node 2: conflict_classifier
-def conflict_classifier(state: Dict[str, Any]) -> Dict[str, Any]:
-    llm = get_llm()
-    husband_txt = " ".join(state.get("husband_messages", []))
-    wife_txt = " ".join(state.get("wife_messages", []))
-    current_conflict_desc = f"Husband: {husband_txt}\nWife: {wife_txt}"
-    
-    # ChromaDB RAG: Find similar past conflicts
-    rag_context = ""
-    try:
-        similar = rag_store.find_similar_conflicts(current_conflict_desc, limit=2)
-        if similar:
-            rag_context = "\nSimilar past cases:\n" + "\n".join(
-                [f"- Issue: {c['root_cause']}\n  Resolution: {c['resolution']}" for c in similar]
-            )
-    except Exception:
-        pass  # Fail gracefully if ChromaDB is empty or fails
-        
-    prompt = [
-        SystemMessage(content=(
-            "Classify the couples conflict into one of: "
-            "communication, trust, boundary, jealousy, financial, intimacy, other. "
-            f"Use similar past resolutions context if helpful:\n{rag_context}\n"
-            "Return only the classification category word in lowercase (e.g. communication)."
-        )),
-        HumanMessage(content=f"Current Issue:\n{current_conflict_desc}")
-    ]
-    
-    try:
-        response = llm.invoke(prompt)
-        conflict_type = response.content.strip().lower()
-    except Exception:
-        conflict_type = "communication"
-        
-    return {"conflict_type": conflict_type}
-
-# Node 3: perspective_generator
-def generate_paraphrased_perspective(message_history: List[str], target_language: str = "english") -> str:
-    """
-    Helper function (can be called as node or standalone) to paraphrase a partner's view
-    for cross-referencing.
-    """
-    llm = get_llm()
-    text = " | ".join(message_history)
-    prompt = [
-        SystemMessage(content=(
-            "Paraphrase the partner's messages neutrally. Summarize what they feel and what they want. "
-            "DO NOT use exact quotes. Be empathetic. "
-            f"Response MUST be in {target_language}."
-        )),
-        HumanMessage(content=text)
-    ]
-    try:
-        response = llm.invoke(prompt)
-        return response.content.strip()
-    except Exception:
-        return "your partner feels upset about recent events and wants to discuss things calmly."
-
-# Node 4: root_cause_analyzer
-def root_cause_analyzer(state: Dict[str, Any]) -> Dict[str, Any]:
-    llm = get_llm()
-    husband_txt = " ".join(state.get("husband_messages", []))
-    wife_txt = " ".join(state.get("wife_messages", []))
-    
-    prompt = [
-        SystemMessage(content=(
-            "You are a professional marriage therapist. Read the views of both partners and identify "
-            "the deep underlying root cause of their conflict (e.g., unmet emotional needs, "
-            "unclear boundaries, historical resentment, exhaustion). Be concise."
-        )),
-        HumanMessage(content=f"Husband's side: {husband_txt}\nWife's side: {wife_txt}")
-    ]
-    
-    try:
-        response = llm.invoke(prompt)
-        root_cause = response.content.strip()
-    except Exception:
-        root_cause = "Miscommunication and differences in expectation."
-        
-    return {"root_cause": root_cause}
-
-# Node 6: resolution_generator
-def resolution_generator(state: Dict[str, Any]) -> Dict[str, Any]:
+# Node 2: cross_reference_analyzer
+def cross_reference_analyzer(state: Dict[str, Any]) -> Dict[str, Any]:
     llm = get_llm()
     
     husband_txt = " ".join(state.get("husband_messages", []))
     wife_txt = " ".join(state.get("wife_messages", []))
-    root_cause = state.get("root_cause", "")
-    conflict_type = state.get("conflict_type", "")
     language = state.get("language", "english")
     
     prompt = [
         SystemMessage(content=(
-            f"You are a marriage therapist. Based on the conflict type '{conflict_type}' and root cause '{root_cause}', "
-            "generate a dual resolution plan. "
-            "1. Step by step constructive resolution advice.\n"
-            "2. A communication script (exact practical words they can say to each other to initiate healing).\n"
-            f"The entire output MUST be in the preferred language: {language}.\n"
-            "Respond in JSON format with keys 'resolution' and 'communication_script'. No formatting markdown."
+            f"You are a professional marriage therapist. Read both partners' accounts of a conflict and cross-reference them. "
+            "Use semantic comparison (meaning-based) to determine their match percentage. "
+            "Give a severity classification based on this fixed reference table:\n"
+            "- critical (hitting, abuse, cheating)\n"
+            "- high (lying, broken trust, major fight)\n"
+            "- medium (ignoring, broken promises)\n"
+            "- low (lateness, small misunderstanding)\n\n"
+            f"Provide your advice in {language}. Provide personalized advice for each person.\n"
+            "Return ONLY valid JSON with exactly the following keys, no markdown blocks:\n"
+            "{\n"
+            '  "match_percentage": <integer 0-100>,\n'
+            '  "severity": "<critical|high|medium|low>",\n'
+            '  "conflict_type": "<short description>",\n'
+            '  "root_cause": "<detailed root cause>",\n'
+            '  "advice_a": "<advice for Person A>",\n'
+            '  "advice_b": "<advice for Person B>"\n'
+            "}"
         )),
-        HumanMessage(content=f"Husband: {husband_txt}\nWife: {wife_txt}")
+        HumanMessage(content=f"Person A said: \"{husband_txt}\"\nPerson B said: \"{wife_txt}\"")
     ]
     
     try:
         response = llm.invoke(prompt)
         clean_content = response.content.replace("```json", "").replace("```", "").strip()
         data = json.loads(clean_content)
-        resolution = data.get("resolution", "")
-        communication_script = data.get("communication_script", "")
-    except Exception:
-        if language == "tamil":
-            resolution = "தயவுசெய்து ஒருவரையொருவர் கவனித்துக் கொள்ளுங்கள்."
-            communication_script = "\"நான் உன்னை நேசிக்கிறேன், இதை நாம் இணைந்து தீர்ப்போம்.\""
-        else:
-            resolution = "Please spend quiet, dedicated time listening to each other's needs without judgment."
-            communication_script = "\"I appreciate your perspective, and I want us to work together to find a solution.\""
+    except Exception as e:
+        # Fallback response
+        data = {
+            "match_percentage": 50,
+            "severity": "medium",
+            "conflict_type": "communication",
+            "root_cause": "System failed to analyze.",
+            "advice_a": "Please communicate openly.",
+            "advice_b": "Please communicate openly."
+        }
             
     return {
-        "resolution": resolution,
-        "communication_script": communication_script
+        "match_percentage": data.get("match_percentage", 50),
+        "severity": data.get("severity", "medium"),
+        "conflict_type": data.get("conflict_type", "communication"),
+        "root_cause": data.get("root_cause", "Miscommunication."),
+        "advice_a": data.get("advice_a", ""),
+        "advice_b": data.get("advice_b", "")
     }

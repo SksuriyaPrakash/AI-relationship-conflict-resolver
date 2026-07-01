@@ -12,6 +12,7 @@ class ConflictSession(models.Model):
     ]
     couple = models.ForeignKey(CoupleProfile, on_delete=models.CASCADE, related_name="conflict_sessions")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="collecting")
+    mismatch_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -22,6 +23,8 @@ class ChatMessage(models.Model):
         ("individual", "Individual"),
         ("cross_ref", "Cross Reference"),
         ("clarification", "Clarification"),
+        ("advice", "Advice"),
+        ("escalation", "Escalation"),
     ]
     STATUS_CHOICES = [
         ("sent", "Sent"),
@@ -30,6 +33,7 @@ class ChatMessage(models.Model):
     ]
     session = models.ForeignKey(ConflictSession, on_delete=models.CASCADE, related_name="messages")
     sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sent_messages")
+    visible_to = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True, related_name="private_messages")
     message = models.TextField()
     is_ai = models.BooleanField(default=False)
     phase = models.CharField(max_length=20, choices=PHASE_CHOICES)
@@ -42,6 +46,8 @@ class ChatMessage(models.Model):
 
 class AIAnalysisResult(models.Model):
     session = models.OneToOneField(ConflictSession, on_delete=models.CASCADE, related_name="analysis_result")
+    match_percentage = models.IntegerField(default=0)
+    severity = models.CharField(max_length=20, default="low")
     husband_emotions = models.JSONField(default=dict)
     wife_emotions = models.JSONField(default=dict)
     conflict_type = models.CharField(max_length=100)

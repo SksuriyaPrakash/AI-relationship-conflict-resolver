@@ -124,6 +124,16 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 })
                 return
 
+            # Check if user already submitted their individual perspective
+            if phase == "individual":
+                p1_sub, p2_sub = await self.get_submission_statuses(self.session)
+                if (self.role == "partner_1" and p1_sub) or (self.role == "partner_2" and p2_sub):
+                    await self.send_json({
+                        "type": "error",
+                        "message": "You have already submitted your perspective. Please wait for your partner."
+                    })
+                    return
+
             # Save user message to database
             user_msg = await self.save_message(
                 session=self.session,
@@ -202,7 +212,8 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             message=ai_reply,
             is_ai=True,
             phase="individual",
-            status="sent"
+            status="sent",
+            visible_to=self.user
         )
 
         # Send reply back to user (private)
@@ -323,12 +334,12 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             logger.error(f"Error in LangGraph workflow execution: {e}")
             result = {
                 "escalation_flag": False,
-                "husband_emotions": {"frustration": 5},
-                "wife_emotions": {"frustration": 5},
+                "match_percentage": 50,
+                "severity": "medium",
                 "conflict_type": "communication",
                 "root_cause": "System failed to analyze, defaulting to fallback.",
-                "resolution": "Please talk face-to-face and resolve details calmly.",
-                "communication_script": "Let's sit together and work this out."
+                "advice_a": "Please talk face-to-face calmly.",
+                "advice_b": "Listen to your partner without interrupting."
             }
 
         # Handle escalation check
@@ -367,20 +378,57 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             return
 
         # Normal successful resolution
-        await self.update_session_status(self.session, "resolved")
-        await self.update_progress(self.session, 90, "AI analysis complete. Resolution plans issued.")
+        match_pct = result.get("match_percentage", 50)
         
-        # Save to vector db (RAG)
-        try:
-            await database_sync_to_async(rag_store.add_resolved_conflict)(
-                session_id=self.session.id,
-                root_cause=result.get("root_cause", ""),
-                resolution=result.get("resolution", ""),
-                conflict_type=result.get("conflict_type", "")
-            )
-        except Exception as e:
-            logger.error(f"Chroma RAG save failed: {e}")
+        if match_pct < 75:
+            # Increment mismatch count and handle retry or escalation
+            self.session.mismatch_count += 1
+            await database_sync_to_async(self.session.save)()
+            
+            if self.session.mismatch_count >= 3:
+                await self.update_session_status(self.session, "escalated")
+                await self.update_progress(self.session, 100, "Multiple mismatches. Escalated to professional.")
+                await self.save_analysis_result(self.session, result, is_escalated=True)
+                
+                warning_msg = "We couldn't align your perspectives after several tries. Please consult a professional therapist."
+                await self.save_message(self.session, self.session.couple.partner_1, warning_msg, is_ai=True, phase="cross_ref")
+                await self.save_message(self.session, self.session.couple.partner_2, warning_msg, is_ai=True, phase="cross_ref")
+                
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        "type": "broadcast_escalated",
+                        "message": warning_msg
+                    }
+                )
+            else:
+                await self.update_session_status(self.session, "cross_referencing")
+                retry_msg = "Your perspectives didn't match closely enough. Please re-elaborate and clarify your stance."
+                await self.save_message(self.session, self.session.couple.partner_1, retry_msg, is_ai=True, phase="cross_ref")
+                await self.save_message(self.session, self.session.couple.partner_2, retry_msg, is_ai=True, phase="cross_ref")
+                
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        "type": "session.status.update",
+                        "status": "cross_referencing",
+                        "system_message": retry_msg
+                    }
+                )
+            return
 
+        # match_percentage >= 75
+        await self.update_session_status(self.session, "analyzing")
+        
+        severity = result.get("severity", "low").lower()
+        deduction = 0
+        if severity == "critical": deduction = -20
+        elif severity == "high": deduction = -15
+        elif severity == "medium": deduction = -10
+        elif severity == "low": deduction = -5
+        
+        await self.update_progress(self.session, deduction, f"Severity scoring ({severity}) applied.")
+        
         # Save AI analysis result model
         analysis_obj = await self.save_analysis_result(
             session=self.session,
@@ -388,18 +436,23 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             is_escalated=False
         )
 
+        # Personalized Advice (private)
+        advice_a = result.get("advice_a", "")
+        advice_b = result.get("advice_b", "")
+        
+        await self.save_private_message(self.session, self.session.couple.partner_1, advice_a, "advice")
+        await self.save_private_message(self.session, self.session.couple.partner_2, advice_b, "advice")
+
         # Broadcast the resolution results to both clients
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 "type": "broadcast_analysis_ready",
                 "analysis": {
-                    "husband_emotions": result.get("husband_emotions", {}),
-                    "wife_emotions": result.get("wife_emotions", {}),
+                    "match_percentage": match_pct,
+                    "severity": severity,
                     "conflict_type": result.get("conflict_type", ""),
                     "root_cause": result.get("root_cause", ""),
-                    "resolution": result.get("resolution", ""),
-                    "communication_script": result.get("communication_script", "")
                 }
             }
         )
@@ -422,7 +475,8 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             message=ai_reply,
             is_ai=True,
             phase="clarification",
-            status="sent"
+            status="sent",
+            visible_to=self.user
         )
 
         # Send response to user privately
@@ -514,11 +568,15 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         for m in msgs:
             # Visibility checks
             is_visible = False
-            if m.phase == "cross_ref":
-                is_visible = True
-            elif m.phase in ["individual", "clarification"]:
-                if m.sender == user:
+            if m.visible_to:
+                if m.visible_to == user:
                     is_visible = True
+            else:
+                if m.phase == "cross_ref":
+                    is_visible = True
+                elif m.phase in ["individual", "clarification"]:
+                    if m.sender == user:
+                        is_visible = True
             
             if is_visible:
                 history.append({
@@ -552,14 +610,27 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         return [m.message for m in msgs]
 
     @database_sync_to_async
-    def save_message(self, session, sender, message, is_ai, phase, status="sent"):
+    def save_message(self, session, sender, message, is_ai, phase, status="sent", visible_to=None):
         return ChatMessage.objects.create(
             session=session,
             sender=sender,
             message=message,
             is_ai=is_ai,
             phase=phase,
-            status=status
+            status=status,
+            visible_to=visible_to
+        )
+
+    @database_sync_to_async
+    def save_private_message(self, session, user, message, phase):
+        return ChatMessage.objects.create(
+            session=session,
+            sender=user,
+            visible_to=user,
+            message=message,
+            is_ai=True,
+            phase=phase,
+            status="sent"
         )
 
     @database_sync_to_async
@@ -604,12 +675,14 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         obj, _ = AIAnalysisResult.objects.update_or_create(
             session=session,
             defaults={
-                "husband_emotions": result.get("husband_emotions", {}),
-                "wife_emotions": result.get("wife_emotions", {}),
+                "husband_emotions": {},
+                "wife_emotions": {},
                 "conflict_type": result.get("conflict_type", "communication"),
                 "root_cause": result.get("root_cause", ""),
-                "resolution": result.get("resolution", ""),
-                "communication_script": result.get("communication_script", ""),
+                "resolution": "",
+                "communication_script": "",
+                "match_percentage": result.get("match_percentage", 0),
+                "severity": result.get("severity", "low"),
                 "is_escalated": is_escalated
             }
         )
