@@ -30,11 +30,8 @@ class ConflictSessionViewSet(viewsets.ModelViewSet, CoupleContextMixin):
         if not couple:
             return Response({"detail": "User is not linked to any couple profile."}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Check if there is an active (unresolved/non-escalated) session
-        active_session = ConflictSession.objects.filter(
-            couple=couple,
-            status__in=["collecting", "cross_referencing", "analyzing"]
-        ).first()
+        # We enforce a single persistent session per couple.
+        active_session = ConflictSession.objects.filter(couple=couple).order_by('created_at').first()
         
         if active_session:
             serializer = self.get_serializer(active_session)

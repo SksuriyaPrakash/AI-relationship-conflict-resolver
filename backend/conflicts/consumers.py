@@ -103,6 +103,11 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         
         # Reload session state from DB to get the latest status
         self.session = await self.get_session(self.session_id)
+        
+        if not self.session:
+            await self.send_json({"type": "error", "message": "Session no longer exists."})
+            await self.close(code=4004)
+            return
 
         if event_type == "message.sent":
             message_text = content.get("message")
@@ -198,34 +203,57 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
     # --- Real-Time State Handlers ---
 
     async def handle_individual_chat_response(self, user_message):
-        # AI replies to user to dig deeper
+        import time
         user_msgs = await self.get_user_messages_in_phase(self.session, self.user, "individual")
-        ai_reply = await database_sync_to_async(query_individual_chat_followup)(
-            messages_list=user_msgs,
-            language=self.user.language_preference
-        )
+        llm = get_llm()
+        text = " | ".join(user_msgs)
+        language = self.user.language_preference
+        prompt = [
+            SystemMessage(content=(
+                "You are a supportive relationship counselor. The user is explaining a conflict they are facing with their partner. "
+                "Ask exactly one gentle, open-ended question to help them elaborate on their feelings or the situation. "
+                f"Response MUST be in {language}."
+            )),
+            HumanMessage(content=text)
+        ]
+
+        msg_id = f"ai-ind-{self.user.id}-{int(time.time())}"
+        await self.send_json({
+            "type": "stream.start",
+            "message_id": msg_id,
+            "phase": "individual"
+        })
+
+        ai_reply = ""
+        try:
+            if hasattr(llm, "astream"):
+                async for chunk in llm.astream(prompt):
+                    if chunk.content:
+                        ai_reply += chunk.content
+                        await self.send_json({
+                            "type": "stream.chunk",
+                            "message_id": msg_id,
+                            "chunk": chunk.content
+                        })
+            else:
+                response = await database_sync_to_async(llm.invoke)(prompt)
+                ai_reply = response.content
+                await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": ai_reply})
+        except Exception as e:
+            logger.error(f"Streaming error in individual chat: {e}")
+            ai_reply = "Can you tell me more about how that made you feel?" if language == "english" else "அதைப்பற்றி இன்னும் கொஞ்சம் விரிவாகக் கூற முடியுமா?"
+            await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": ai_reply})
 
         # Save AI reply directed to this user
         await self.save_message(
             session=self.session,
             sender=self.user,  # Associate with sender for private history lookup
-            message=ai_reply,
+            message=ai_reply.strip(),
             is_ai=True,
             phase="individual",
             status="sent",
             visible_to=self.user
         )
-
-        # Send reply back to user (private)
-        await self.send_json({
-            "type": "message.sent",
-            "message": {
-                "message": ai_reply,
-                "is_ai": True,
-                "phase": "individual",
-                "status": "sent"
-            }
-        })
 
     async def handle_submit_side(self):
         # Set submission status for the user
@@ -432,6 +460,7 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             return
 
         # match_percentage >= 75
+        import time
         await self.update_session_status(self.session, "analyzing")
         
         severity = result.get("severity", "low").lower()
@@ -443,6 +472,86 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         
         await self.update_progress(self.session, deduction, f"Severity scoring ({severity}) applied.")
         
+        # We broadcast the start of the stream for the resolution
+        msg_id = f"ai-res-{self.session.id}-{int(time.time())}"
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "broadcast_stream_start",
+                "message_id": msg_id
+            }
+        )
+
+        llm = get_llm()
+        husband_txt = " ".join(p1_msgs)
+        wife_txt = " ".join(p2_msgs)
+        prompt = [
+            SystemMessage(content=(
+                "You are a compassionate relationship counselor. Based on the following conflict analysis, "
+                "write a kind, direct resolution message addressing both partners. Explain why it happened and how to move forward. "
+                f"Response MUST be in {pref_lang}."
+            )),
+            HumanMessage(content=(
+                f"Conflict Type: {result.get('conflict_type', 'communication')}\n"
+                f"Root Cause: {result.get('root_cause', 'Misunderstanding')}\n"
+                f"Husband said: {husband_txt}\n"
+                f"Wife said: {wife_txt}\n"
+                "Please provide the final resolution guidance."
+            ))
+        ]
+
+        resolution_text = ""
+        try:
+            if hasattr(llm, "astream"):
+                async for chunk in llm.astream(prompt):
+                    if chunk.content:
+                        resolution_text += chunk.content
+                        await self.channel_layer.group_send(
+                            self.room_group_name,
+                            {
+                                "type": "broadcast_stream_chunk",
+                                "message_id": msg_id,
+                                "chunk": chunk.content
+                            }
+                        )
+            else:
+                response = await database_sync_to_async(llm.invoke)(prompt)
+                resolution_text = response.content
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        "type": "broadcast_stream_chunk",
+                        "message_id": msg_id,
+                        "chunk": resolution_text
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Streaming error in resolution: {e}")
+            resolution_text = "Based on our analysis, communication is key. Listen to each other."
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "broadcast_stream_chunk",
+                    "message_id": msg_id,
+                    "chunk": resolution_text
+                }
+            )
+
+        result["resolution"] = resolution_text.strip()
+
+        # Update session status to resolved in DB
+        await self.update_session_status(self.session, "resolved")
+
+        # Save the resolution as a chat message so it persists in history
+        await self.save_message(
+            session=self.session,
+            sender=self.session.couple.partner_1,  # Sender doesn't matter much for AI broadcast
+            message=result["resolution"],
+            is_ai=True,
+            phase="cross_ref",
+            status="sent"
+        )
+
         # Save AI analysis result model
         analysis_obj = await self.save_analysis_result(
             session=self.session,
@@ -450,18 +559,17 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             is_escalated=False
         )
 
-        # Personalized Advice (private)
+        # Personalized Advice (private) is stored in AIAnalysisResult
+        # We no longer save it as a ChatMessage to prevent it from cluttering the main chat timeline
         advice_a = result.get("advice_a", "")
         advice_b = result.get("advice_b", "")
-        
-        await self.save_private_message(self.session, self.session.couple.partner_1, advice_a, "advice")
-        await self.save_private_message(self.session, self.session.couple.partner_2, advice_b, "advice")
 
         # Broadcast the resolution results to both clients
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 "type": "broadcast_analysis_ready",
+                "message_id": msg_id,
                 "analysis": {
                     "match_percentage": match_pct,
                     "severity": severity,
@@ -473,18 +581,45 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def handle_clarification_response(self, message_text):
+        import time
+        msg_id = f"ai-clarify-{self.user.id}-{int(time.time())}"
+        await self.send_json({
+            "type": "stream.start",
+            "message_id": msg_id,
+            "phase": "clarification"
+        })
+
         try:
-            # Fetch analysis details for context
             analysis_data = await self.get_analysis_context(self.session)
-            
-            # Query follow up question response
-            ai_reply = await database_sync_to_async(query_clarification_followup)(
-                session_context=analysis_data,
-                new_question=message_text,
-                language=self.user.language_preference
-            )
+            llm = get_llm()
+            language = self.user.language_preference
+            prompt = [
+                SystemMessage(content=(
+                    "You are a supportive relationship counselor. The couple has just received an analysis of their conflict. "
+                    f"Here is the context of their conflict analysis:\n{analysis_data}\n"
+                    "Answer the user's follow-up or clarification question privately and empathetically. "
+                    f"Response MUST be in {language}."
+                )),
+                HumanMessage(content=message_text)
+            ]
+
+            ai_reply = ""
+            if hasattr(llm, "astream"):
+                async for chunk in llm.astream(prompt):
+                    if chunk.content:
+                        ai_reply += chunk.content
+                        await self.send_json({
+                            "type": "stream.chunk",
+                            "message_id": msg_id,
+                            "chunk": chunk.content
+                        })
+            else:
+                response = await database_sync_to_async(llm.invoke)(prompt)
+                ai_reply = response.content
+                await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": ai_reply})
+
         except Exception as e:
-            logger.error(f"Error in clarification: {e}")
+            logger.error(f"Error in clarification streaming: {e}")
             await self.delete_latest_clarification_message(self.session, self.user)
             await self.send_json({
                 "type": "error",
@@ -497,23 +632,12 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         await self.save_message(
             session=self.session,
             sender=self.user,
-            message=ai_reply,
+            message=ai_reply.strip(),
             is_ai=True,
             phase="clarification",
             status="sent",
             visible_to=self.user
         )
-
-        # Send response to user privately
-        await self.send_json({
-            "type": "message.sent",
-            "message": {
-                "message": ai_reply,
-                "is_ai": True,
-                "phase": "clarification",
-                "status": "sent"
-            }
-        })
 
     # --- Channel Event Broadcast Handlers ---
 
@@ -568,9 +692,25 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         })
 
     async def broadcast_analysis_ready(self, event):
-        await self.send_json({
+        payload = {
             "type": "ai.response.ready",
             "analysis": event["analysis"]
+        }
+        if "message_id" in event:
+            payload["message_id"] = event["message_id"]
+        await self.send_json(payload)
+
+    async def broadcast_stream_start(self, event):
+        await self.send_json({
+            "type": "stream.start",
+            "message_id": event["message_id"]
+        })
+
+    async def broadcast_stream_chunk(self, event):
+        await self.send_json({
+            "type": "stream.chunk",
+            "message_id": event["message_id"],
+            "chunk": event["chunk"]
         })
 
     async def session_status_update(self, event):

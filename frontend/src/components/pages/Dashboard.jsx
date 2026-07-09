@@ -51,13 +51,14 @@ function Dashboard() {
 
 
   // Chat state variables
-  const [sessions, setSessions] = useState([]);
   const [currentSession, setCurrentSession] = useState(null);
   const [messages, setMessages] = useState([]);
   const [messageInput, setMessageInput] = useState('');
   const [socket, setSocket] = useState(null);
+  const socketRef = useRef(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isWaitingForPartner, setIsWaitingForPartner] = useState(false);
   const [partnerTyping, setPartnerTyping] = useState(false);
   const messagesEndRef = useRef(null);
   const lastSentMessage = useRef('');
@@ -73,6 +74,14 @@ function Dashboard() {
         setRole(data.role);
         setMessages(data.history || []);
         setIsAnalyzing(data.session_status === 'analyzing');
+        if (data.history && data.history.length > 0) {
+          const lastMsg = data.history[data.history.length - 1];
+          if (lastMsg.is_ai && lastMsg.status === 'waiting') {
+            setIsWaitingForPartner(true);
+          } else {
+            setIsWaitingForPartner(false);
+          }
+        }
       } else if (data.type === 'message.sent') {
         setMessages((prev) => {
           if (prev.some((m) => m.id === data.message.id)) {
@@ -82,21 +91,30 @@ function Dashboard() {
         });
         if (data.message.is_ai) {
           setIsAnalyzing(false);
+          if (data.message.status === 'waiting') {
+            setIsWaitingForPartner(true);
+          } else {
+            setIsWaitingForPartner(false);
+          }
         }
       } else if (data.type === 'error') {
         setIsAnalyzing(false);
+        setIsWaitingForPartner(false);
+        
+        setMessages(prev => {
+          const newMsgs = [...prev];
+          newMsgs.push({
+            id: `sys-error-${Date.now()}`,
+            message: `⚠️ Error: ${data.message}`,
+            is_ai: true,
+            isSystem: false,
+            timestamp: new Date().toISOString()
+          });
+          return newMsgs;
+        });
+
         if (data.action === 'restore_input') {
           setMessageInput(lastSentMessage.current);
-          setMessages(prev => {
-            const newMsgs = [...prev];
-            for (let i = newMsgs.length - 1; i >= 0; i--) {
-              if (newMsgs[i].sender_name === (user?.username || 'You') && !newMsgs[i].is_ai) {
-                newMsgs.splice(i, 1);
-                break;
-              }
-            }
-            return newMsgs;
-          });
           dispatch({
             type: 'notifications/addNotification',
             payload: {
@@ -105,18 +123,34 @@ function Dashboard() {
               type: 'error'
             }
           });
-        } else {
-          setMessages(prev => [...prev, {
-            id: `sys-error-${Date.now()}`,
-            message: `⚠️ Error: ${data.message}`,
-            is_ai: true,
-            isSystem: true,
-            timestamp: new Date().toISOString()
-          }]);
         }
+      } else if (data.type === 'stream.start' || data.type === 'broadcast_stream_start') {
+        setIsAnalyzing(false);
+        setIsWaitingForPartner(false);
+        setMessages(prev => {
+          if (prev.some(m => m.id === data.message_id)) return prev;
+          return [...prev, {
+            id: data.message_id,
+            message: "",
+            is_ai: true,
+            phase: data.phase || "analyzing",
+            status: "sent",
+            timestamp: new Date().toISOString()
+          }];
+        });
+      } else if (data.type === 'stream.chunk' || data.type === 'broadcast_stream_chunk') {
+        setMessages(prev => {
+          return prev.map(m => {
+            if (m.id === data.message_id) {
+              return { ...m, message: m.message + data.chunk };
+            }
+            return m;
+          });
+        });
       } else if (data.type === 'session.status.update') {
         setCurrentSession(prev => prev ? { ...prev, status: data.status } : null);
         setIsAnalyzing(data.status === 'analyzing');
+        setIsWaitingForPartner(false);
         setMessages(prev => [...prev, {
           id: `sys-${Date.now()}`,
           message: data.system_message || `Session status updated to ${data.status}`,
@@ -126,15 +160,22 @@ function Dashboard() {
         }]);
       } else if (data.type === 'ai.analyzing') {
         setIsAnalyzing(true);
+        setIsWaitingForPartner(false);
       } else if (data.type === 'ai.response.ready') {
         setIsAnalyzing(false);
-        setMessages(prev => [...prev, {
-          id: `sys-ready-${Date.now()}`,
-          message: `AI analysis complete! Resolution: ${data.analysis.resolution}`,
-          is_ai: true,
-          timestamp: new Date().toISOString()
-        }]);
-        setCurrentSession(prev => prev ? { ...prev, status: 'resolved' } : null);
+        setIsWaitingForPartner(false);
+        if (data.message_id) {
+          // Streaming was used, no need to push another message
+          setCurrentSession(prev => prev ? { ...prev, status: 'resolved' } : null);
+        } else {
+          setMessages(prev => [...prev, {
+            id: `sys-ready-${Date.now()}`,
+            message: `AI analysis complete! Resolution: ${data.analysis.resolution}`,
+            is_ai: true,
+            timestamp: new Date().toISOString()
+          }]);
+          setCurrentSession(prev => prev ? { ...prev, status: 'resolved' } : null);
+        }
       } else if (data.type === 'partner.typing') {
         setPartnerTyping(data.typing);
       } else if (data.type === 'partner.replied') {
@@ -159,8 +200,8 @@ function Dashboard() {
   };
 
   const connectWebSocket = (sessionId) => {
-    if (socket) {
-      socket.close();
+    if (socketRef.current) {
+      socketRef.current.close();
     }
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -168,6 +209,8 @@ function Dashboard() {
     const wsUrl = `${wsProtocol}//${wsHost}/ws/conflict/${sessionId}/?token=${token}`;
 
     const ws = new WebSocket(wsUrl);
+    socketRef.current = ws;
+    
     ws.onopen = () => {
       setIsConnected(true);
     };
@@ -175,35 +218,33 @@ function Dashboard() {
     setSocket(ws);
   };
 
-  // Fetch conflict sessions on mount
+  // Fetch or create the single conflict session on mount
   useEffect(() => {
-    const fetchSessions = async () => {
+    const fetchOrInitializeSession = async () => {
       try {
-        const res = await axios.get(`${Base_Url}/api/conflicts/sessions/`, {
+        const res = await axios.post(`${Base_Url}/api/conflicts/sessions/`, {}, {
           headers: { Authorization: `Bearer ${token}` }
         });
-        if (res.data && res.data.length > 0) {
-          setSessions(res.data);
-          const latest = res.data[0];
-          setCurrentSession(latest);
-          setIsAnalyzing(latest.status === 'analyzing');
-          connectWebSocket(latest.id);
-        }
+        const session = res.data;
+        setCurrentSession(session);
+        setIsAnalyzing(session.status === 'analyzing');
+        connectWebSocket(session.id);
       } catch (err) {
-        console.error("Failed to fetch sessions:", err);
+        console.error("Failed to initialize session:", err);
       }
     };
 
-    if (token) {
-      fetchSessions();
+    if (token && user?.is_partner_added) {
+      fetchOrInitializeSession();
     }
 
     return () => {
-      if (socket) {
-        socket.close();
+      if (socketRef.current) {
+        socketRef.current.close();
+        socketRef.current = null;
       }
     };
-  }, [token]);
+  }, [token, user?.is_partner_added]);
 
   // Poll for partner join status if not yet added
   useEffect(() => {
@@ -233,11 +274,17 @@ function Dashboard() {
   }, [user?.is_partner_added, dispatch]);
 
   const reconnectAndSend = (sessionId, messageText) => {
+    if (socketRef.current) {
+      socketRef.current.close();
+    }
+
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = Base_Url.replace(/^https?:\/\//, '');
     const wsUrl = `${wsProtocol}//${wsHost}/ws/conflict/${sessionId}/?token=${token}`;
 
     const ws = new WebSocket(wsUrl);
+    socketRef.current = ws;
+
     ws.onopen = () => {
       setIsConnected(true);
       ws.send(JSON.stringify({
@@ -274,41 +321,6 @@ function Dashboard() {
       }));
     } else if (currentSession) {
       reconnectAndSend(currentSession.id, text);
-    } else {
-      handleStartSessionAndSend(text);
-    }
-  };
-
-  const handleStartSessionAndSend = async (initialMessage) => {
-    try {
-      const res = await axios.post(`${Base_Url}/api/conflicts/sessions/`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const newSession = res.data;
-      setSessions(prev => [newSession, ...prev]);
-      setCurrentSession(newSession);
-      setIsAnalyzing(newSession.status === 'analyzing');
-
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsHost = Base_Url.replace(/^https?:\/\//, '');
-      const wsUrl = `${wsProtocol}//${wsHost}/ws/conflict/${newSession.id}/?token=${token}`;
-      const ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        setIsConnected(true);
-        ws.send(JSON.stringify({
-          type: 'message.sent',
-          message: initialMessage
-        }));
-      };
-      setupSocketListeners(ws);
-      setSocket(ws);
-    } catch (err) {
-      console.error("Failed to start session:", err);
-      const errorMsg = err.response?.data?.detail || "Failed to start session.";
-      setToastMessage(errorMsg);
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 3000);
     }
   };
 
@@ -324,26 +336,7 @@ function Dashboard() {
     }
   };
 
-  const handleCreateNewSession = async () => {
-    try {
-      const res = await axios.post(`${Base_Url}/api/conflicts/sessions/`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const newSession = res.data;
-      setSessions(prev => [newSession, ...prev]);
-      setCurrentSession(newSession);
-      setMessages([]);
-      connectWebSocket(newSession.id);
-      setToastMessage("New conflict session started!");
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 2500);
-    } catch (err) {
-      const errorMsg = err.response?.data?.detail || "Failed to create new session.";
-      setToastMessage(errorMsg);
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 3000);
-    }
-  };
+  // New session creation is removed as we are transitioning to a single session per couple.
 
   const [isEditing, setIsEditing] = useState(false);
   const [editUsername, setEditUsername] = useState('');
@@ -499,11 +492,11 @@ function Dashboard() {
                 messageInput={messageInput}
                 setMessageInput={setMessageInput}
                 isAnalyzing={isAnalyzing}
+                isWaitingForPartner={isWaitingForPartner}
                 partnerTyping={partnerTyping}
                 socket={socket}
                 handleSendMessage={handleSendMessage}
                 handleSubmitPerspective={handleSubmitPerspective}
-                handleCreateNewSession={handleCreateNewSession}
               />
             </div>
 

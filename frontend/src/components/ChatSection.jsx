@@ -7,11 +7,11 @@ function ChatSection({
   messageInput,
   setMessageInput,
   isAnalyzing,
+  isWaitingForPartner,
   partnerTyping,
   socket,
   handleSendMessage,
-  handleSubmitPerspective,
-  handleCreateNewSession,
+  handleSubmitPerspective
 }) {
   const messageListRef = useRef(null);
   // Find the index of the last AI or System message
@@ -57,19 +57,10 @@ function ChatSection({
           <div>
             <h4 className="mb-0">Chat with Lerio AI</h4>
             <span className="fs-ten text-muted">
-              {currentSession ? `Session #${currentSession.id} (${currentSession.status})` : 'No active session'}
+              {currentSession ? `Conflict Session (${currentSession.status})` : 'Connecting...'}
             </span>
           </div>
         </div>
-        {currentSession && (currentSession.status === 'resolved' || currentSession.status === 'escalated') && (
-          <button 
-            onClick={handleCreateNewSession}
-            className="btn btn-outline-primary btn-sm py-2 px-3 rounded-3"
-            style={{ borderColor: 'var(--p1-color)', color: 'var(--p1-color)' }}
-          >
-            <i className="ti ti-plus"></i> New Conflict Session
-          </button>
-        )}
       </div>
 
       {/* Chat Messages Area */}
@@ -103,32 +94,33 @@ function ChatSection({
               );
             }
 
-            // User messages are on the LEFT, AI response on the RIGHT
+            // User messages are on the RIGHT, AI response on the LEFT
             const isUser = !msg.is_ai;
             
             return (
               <div 
                 key={msg.id || index} 
-                className={`d-flex flex-column ${isUser ? 'align-items-start' : 'align-items-end'}`}
+                className={`d-flex flex-column ${isUser ? 'align-items-end' : 'align-items-start'}`}
                 style={{ width: '100%' }}
               >
                 {/* Bubble Container */}
-                <div className="d-flex align-items-end gap-2" style={{ maxWidth: '75%', alignSelf: isUser ? 'flex-start' : 'flex-end' }}>
-                  {isUser && (
-                    <img 
-                      src={user?.profile_pic || "src/assets/images/avatar2.png"} 
-                      className="rounded-circle border border-primary" 
-                      style={{ width: '28px', height: '28px', objectFit: 'cover' }} 
-                      alt="U"
-                    />
-                  )}
+                <div className="d-flex align-items-end gap-2" style={{ maxWidth: '75%', alignSelf: isUser ? 'flex-end' : 'flex-start' }}>
                   
+                  {!isUser && (
+                    <div 
+                      className="rounded-circle d-flex align-items-center justify-content-center"
+                      style={{ width: '28px', height: '28px', border: '1px solid var(--p1-color)', backgroundColor: 'rgba(25, 15, 71, 0.1)' }}
+                    >
+                      <i className="ti ti-robot s2-color" style={{ fontSize: '14px', color: 'var(--p1-color)' }}></i>
+                    </div>
+                  )}
+
                   <div 
                     className="p-3"
                     style={{
-                      backgroundColor: isUser ? '#f0f2f5' : 'var(--p1-color, #190F47)',
-                      color: isUser ? '#190F47' : '#ffffff',
-                      borderRadius: isUser ? '16px 16px 16px 4px' : '16px 16px 4px 16px',
+                      backgroundColor: isUser ? 'var(--p1-color, #190F47)' : '#f0f2f5',
+                      color: isUser ? '#ffffff' : '#190F47',
+                      borderRadius: isUser ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
                       boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
                       fontSize: '14px',
                       lineHeight: '1.5',
@@ -139,14 +131,15 @@ function ChatSection({
                     {msg.message}
                   </div>
 
-                  {!isUser && (
-                    <div 
-                      className="rounded-circle d-flex align-items-center justify-content-center"
-                      style={{ width: '28px', height: '28px', border: '1px solid var(--p1-color)', backgroundColor: 'rgba(25, 15, 71, 0.1)' }}
-                    >
-                      <i className="ti ti-robot s2-color" style={{ fontSize: '14px', color: 'var(--p1-color)' }}></i>
-                    </div>
+                  {isUser && (
+                    <img 
+                      src={user?.profile_pic || "src/assets/images/avatar2.png"} 
+                      className="rounded-circle border border-primary" 
+                      style={{ width: '28px', height: '28px', objectFit: 'cover' }} 
+                      alt="U"
+                    />
                   )}
+                  
                 </div>
                 
                 {/* Sender and Time */}
@@ -196,6 +189,8 @@ function ChatSection({
             placeholder={
               isAnalyzing 
                 ? "AI is analyzing, inputs are disabled..." 
+                : isWaitingForPartner
+                ? "Waiting for your partner's message..."
                 : currentSession?.status === 'analyzing'
                 ? "AI is analyzing, please wait..."
                 : currentSession?.status === 'resolved' || currentSession?.status === 'escalated' 
@@ -205,7 +200,7 @@ function ChatSection({
             value={messageInput}
             onChange={handleTextareaChange}
             onBlur={handleTextareaBlur}
-            disabled={!user?.is_partner_added || isAnalyzing || currentSession?.status === 'analyzing'}
+            disabled={!user?.is_partner_added || isAnalyzing || isWaitingForPartner || currentSession?.status === 'analyzing'}
             style={{ resize: 'none', borderColor: '#e2e8f0' }}
           ></textarea>
         </div>
@@ -217,21 +212,12 @@ function ChatSection({
           </div>
         ) : (
           <div className="d-flex align-items-center justify-content-between flex-wrap gap-2 w-100">
-            {/* Submit Side Button for collecting phase */}
-            {currentSession?.status === 'collecting' ? (
-              <button
-                type="button"
-                onClick={handleSubmitPerspective}
-                className="btn btn-outline-danger py-2 px-3 rounded-3 fs-nine d-flex align-items-center gap-2"
-              >
-                <i className="ti ti-circle-check"></i> Submit My Side to AI
-              </button>
-            ) : <div />}
+            <div />
 
             <button 
               type="submit" 
               className="cmn-btn px-4 py-2 rounded-3 d-flex align-items-center gap-2"
-              disabled={!messageInput.trim() || isAnalyzing || currentSession?.status === 'analyzing'}
+              disabled={!messageInput.trim() || isAnalyzing || isWaitingForPartner || currentSession?.status === 'analyzing'}
             >
               <i className="ti ti-send"></i> Send
             </button>

@@ -44,7 +44,23 @@ class MockLLM:
             return HumanMessage(content="I understand this is difficult. Let's look at how we can address this.")
             
         else:
-            return HumanMessage(content="Mock response.")
+            return HumanMessage(content="This is a mock live stream response to demonstrate token-by-token generation. In production with a valid Gemini API key, you will see the actual AI response streaming here!")
+
+    async def astream(self, messages):
+        import asyncio
+        response = self.invoke(messages)
+        text = response.content
+        
+        class MockChunk:
+            def __init__(self, c):
+                self.content = c
+                
+        # Simulate typing token by token
+        words = text.split(" ")
+        for i, word in enumerate(words):
+            chunk = word + (" " if i < len(words) - 1 else "")
+            yield MockChunk(chunk)
+            await asyncio.sleep(0.1)
 
 def get_llm():
     api_key = os.getenv("GEMINI_API_KEY")
