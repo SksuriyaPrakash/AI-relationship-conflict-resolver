@@ -332,15 +332,29 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             result = await database_sync_to_async(conflict_app.invoke)(inputs)
         except Exception as e:
             logger.error(f"Error in LangGraph workflow execution: {e}")
-            result = {
-                "escalation_flag": False,
-                "match_percentage": 50,
-                "severity": "medium",
-                "conflict_type": "communication",
-                "root_cause": "System failed to analyze, defaulting to fallback.",
-                "advice_a": "Please talk face-to-face calmly.",
-                "advice_b": "Listen to your partner without interrupting."
-            }
+            await self.send_json({
+                "type": "error",
+                "message": f"AI Engine Error (Token limit or Server issue): {str(e)}"
+            })
+            # Determine the phase that failed
+            phase = "cross_ref" if self.session.mismatch_count > 0 else "individual"
+            
+            # Revert session status so they can resubmit
+            await self.update_session_status(self.session, phase)
+            
+            # Delete their latest messages so they don't get duplicated on resubmit
+            await self.delete_latest_messages_in_phase(self.session, phase)
+            
+            # Broadcast error event with restore_input flag
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "broadcast_error",
+                    "message": f"AI Engine Error (Token limit or Server issue): {str(e)}",
+                    "action": "restore_input"
+                }
+            )
+            return
 
         # Handle escalation check
         if result.get("escalation_flag", False):
@@ -453,20 +467,31 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                     "severity": severity,
                     "conflict_type": result.get("conflict_type", ""),
                     "root_cause": result.get("root_cause", ""),
+                    "resolution": result.get("resolution", ""),
                 }
             }
         )
 
     async def handle_clarification_response(self, message_text):
-        # Fetch analysis details for context
-        analysis_data = await self.get_analysis_context(self.session)
-        
-        # Query follow up question response
-        ai_reply = await database_sync_to_async(query_clarification_followup)(
-            session_context=analysis_data,
-            new_question=message_text,
-            language=self.user.language_preference
-        )
+        try:
+            # Fetch analysis details for context
+            analysis_data = await self.get_analysis_context(self.session)
+            
+            # Query follow up question response
+            ai_reply = await database_sync_to_async(query_clarification_followup)(
+                session_context=analysis_data,
+                new_question=message_text,
+                language=self.user.language_preference
+            )
+        except Exception as e:
+            logger.error(f"Error in clarification: {e}")
+            await self.delete_latest_clarification_message(self.session, self.user)
+            await self.send_json({
+                "type": "error",
+                "message": f"AI Engine Error: {str(e)}",
+                "action": "restore_input"
+            })
+            return
 
         # Save AI reply private to sender
         await self.save_message(
@@ -491,6 +516,13 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         })
 
     # --- Channel Event Broadcast Handlers ---
+
+    async def broadcast_error(self, event):
+        await self.send_json({
+            "type": "error",
+            "message": event["message"],
+            "action": event.get("action")
+        })
 
     async def broadcast_partner_replied(self, event):
         if event["sender_id"] != self.user.id:
@@ -622,6 +654,22 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             is_ai=False
         ).order_by('timestamp')
         return [m.message for m in msgs]
+
+    @database_sync_to_async
+    def delete_latest_messages_in_phase(self, session, phase):
+        latest_p1 = ChatMessage.objects.filter(session=session, sender=session.couple.partner_1, is_ai=False, phase=phase).order_by('-timestamp').first()
+        if latest_p1:
+            latest_p1.delete()
+            
+        latest_p2 = ChatMessage.objects.filter(session=session, sender=session.couple.partner_2, is_ai=False, phase=phase).order_by('-timestamp').first()
+        if latest_p2:
+            latest_p2.delete()
+
+    @database_sync_to_async
+    def delete_latest_clarification_message(self, session, sender):
+        latest = ChatMessage.objects.filter(session=session, sender=sender, is_ai=False, phase="clarification").order_by('-timestamp').first()
+        if latest:
+            latest.delete()
 
     @database_sync_to_async
     def save_message(self, session, sender, message, is_ai, phase, status="sent", visible_to=None):

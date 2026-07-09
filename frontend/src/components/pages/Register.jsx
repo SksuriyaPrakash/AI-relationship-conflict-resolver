@@ -139,40 +139,53 @@ function Register() {
                                         </div>
                                         <div className="col-md-6">
                                             <div className="input-group">
-                                                <label className="fw_500 mb-1">Gender</label>
-                                                <div className="d-flex align-items-center gap-4 w-100 mt-2">
-                                                    <div className="form-check d-flex align-items-center gap-2">
+                                                <label className="fw_500 mb-2">Gender</label>
+                                                <div className="d-flex align-items-center gap-3 w-100">
+                                                    <label 
+                                                        className="d-flex align-items-center justify-content-center gap-2 rounded-3" 
+                                                        style={{ 
+                                                            cursor: 'pointer', 
+                                                            padding: '10px 16px', 
+                                                            border: gender === 'male' ? '2px solid var(--p1-color, #0d6efd)' : '2px solid #e5e7eb', 
+                                                            backgroundColor: gender === 'male' ? '#f8f9fa' : 'transparent',
+                                                            flex: 1, 
+                                                            transition: 'all 0.2s ease-in-out' 
+                                                        }}
+                                                    >
                                                         <input 
-                                                            className="form-check-input" 
                                                             type="radio" 
                                                             name="gender" 
-                                                            id="genderMale" 
                                                             value="male"
                                                             checked={gender === 'male'}
                                                             onChange={(e) => setGender(e.target.value)}
-                                                            style={{ width: '14px', height: '14px', cursor: 'pointer', margin: 0 }}
+                                                            style={{ width: '18px', height: '18px', cursor: 'pointer', margin: 0, accentColor: 'var(--p1-color, #0d6efd)' }}
                                                             required 
                                                         />
-                                                        <label className="form-check-label mb-0" htmlFor="genderMale" style={{ cursor: 'pointer', color: 'rgba(var(--db), 1)' }}>
-                                                            Male
-                                                        </label>
-                                                    </div>
-                                                    <div className="form-check d-flex align-items-center gap-2">
+                                                        <span className="fw_500" style={{ color: gender === 'male' ? 'var(--p1-color, #0d6efd)' : '#6b7280' }}>Male</span>
+                                                    </label>
+                                                    
+                                                    <label 
+                                                        className="d-flex align-items-center justify-content-center gap-2 rounded-3" 
+                                                        style={{ 
+                                                            cursor: 'pointer', 
+                                                            padding: '10px 16px', 
+                                                            border: gender === 'female' ? '2px solid var(--p1-color, #0d6efd)' : '2px solid #e5e7eb', 
+                                                            backgroundColor: gender === 'female' ? '#f8f9fa' : 'transparent',
+                                                            flex: 1, 
+                                                            transition: 'all 0.2s ease-in-out' 
+                                                        }}
+                                                    >
                                                         <input 
-                                                            className="form-check-input" 
                                                             type="radio" 
                                                             name="gender" 
-                                                            id="genderFemale" 
                                                             value="female"
                                                             checked={gender === 'female'}
                                                             onChange={(e) => setGender(e.target.value)}
-                                                            style={{ width: '14px', height: '14px', cursor: 'pointer', margin: 0 }}
+                                                            style={{ width: '18px', height: '18px', cursor: 'pointer', margin: 0, accentColor: 'var(--p1-color, #0d6efd)' }}
                                                             required 
                                                         />
-                                                        <label className="form-check-label mb-0" htmlFor="genderFemale" style={{ cursor: 'pointer', color: 'rgba(var(--db), 1)' }}>
-                                                            Female
-                                                        </label>
-                                                    </div>
+                                                        <span className="fw_500" style={{ color: gender === 'female' ? 'var(--p1-color, #0d6efd)' : '#6b7280' }}>Female</span>
+                                                    </label>
                                                 </div>
                                             </div>
                                         </div>

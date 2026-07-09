@@ -37,10 +37,8 @@ class ConflictSessionViewSet(viewsets.ModelViewSet, CoupleContextMixin):
         ).first()
         
         if active_session:
-            return Response(
-                {"detail": "You already have an active conflict session.", "session_id": active_session.id},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            serializer = self.get_serializer(active_session)
+            return Response(serializer.data, status=status.HTTP_200_OK)
         
         session = ConflictSession.objects.create(couple=couple, status="collecting")
         

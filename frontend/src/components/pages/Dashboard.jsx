@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState,useRef } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { useNavigate, Link } from 'react-router-dom';
 import { logout, fetchUserProfile, updateUserProfile } from '../../redux/authSlice';
@@ -18,13 +18,25 @@ function Dashboard() {
   const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
+    let pollInterval;
     // If not authenticated, redirect to login page
     if (!token && !loggingOut) {
       navigate('/login');
     } else if (token) {
       dispatch(fetchUserProfile());
+      
+      // Poll for partner connection if not yet connected
+      if (user && !user.is_partner_added) {
+        pollInterval = setInterval(() => {
+          dispatch(fetchUserProfile());
+        }, 3000); // Check every 3 seconds
+      }
     }
-  }, [token, navigate, dispatch, loggingOut]);
+
+    return () => {
+      if (pollInterval) clearInterval(pollInterval);
+    };
+  }, [token, navigate, dispatch, loggingOut, user?.is_partner_added]);
 
   const handleLogoutClick = () => {
     setShowLogoutModal(true);
@@ -47,6 +59,8 @@ function Dashboard() {
   const [isConnected, setIsConnected] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [partnerTyping, setPartnerTyping] = useState(false);
+  const messagesEndRef = useRef(null);
+  const lastSentMessage = useRef('');
   const [role, setRole] = useState('partner_1');
 
 
@@ -68,6 +82,37 @@ function Dashboard() {
         });
         if (data.message.is_ai) {
           setIsAnalyzing(false);
+        }
+      } else if (data.type === 'error') {
+        setIsAnalyzing(false);
+        if (data.action === 'restore_input') {
+          setMessageInput(lastSentMessage.current);
+          setMessages(prev => {
+            const newMsgs = [...prev];
+            for (let i = newMsgs.length - 1; i >= 0; i--) {
+              if (newMsgs[i].sender_name === (user?.username || 'You') && !newMsgs[i].is_ai) {
+                newMsgs.splice(i, 1);
+                break;
+              }
+            }
+            return newMsgs;
+          });
+          dispatch({
+            type: 'notifications/addNotification',
+            payload: {
+              title: 'AI Engine Error',
+              message: data.message + ' Please try sending again.',
+              type: 'error'
+            }
+          });
+        } else {
+          setMessages(prev => [...prev, {
+            id: `sys-error-${Date.now()}`,
+            message: `⚠️ Error: ${data.message}`,
+            is_ai: true,
+            isSystem: true,
+            timestamp: new Date().toISOString()
+          }]);
         }
       } else if (data.type === 'session.status.update') {
         setCurrentSession(prev => prev ? { ...prev, status: data.status } : null);
@@ -92,6 +137,15 @@ function Dashboard() {
         setCurrentSession(prev => prev ? { ...prev, status: 'resolved' } : null);
       } else if (data.type === 'partner.typing') {
         setPartnerTyping(data.typing);
+      } else if (data.type === 'partner.replied') {
+        dispatch({
+          type: 'notifications/addNotification',
+          payload: {
+            title: 'Partner Replied',
+            message: 'Your partner just submitted their message.',
+            type: 'info'
+          }
+        });
       }
     };
 
@@ -132,6 +186,7 @@ function Dashboard() {
           setSessions(res.data);
           const latest = res.data[0];
           setCurrentSession(latest);
+          setIsAnalyzing(latest.status === 'analyzing');
           connectWebSocket(latest.id);
         }
       } catch (err) {
@@ -150,7 +205,32 @@ function Dashboard() {
     };
   }, [token]);
 
+  // Poll for partner join status if not yet added
+  useEffect(() => {
+    let interval;
+    if (user && !user.is_partner_added) {
+      interval = setInterval(() => {
+        dispatch(fetchUserProfile());
+      }, 5000);
+    }
+    return () => clearInterval(interval);
+  }, [user?.is_partner_added, dispatch]);
 
+  // Use a ref to track previous partner added state to trigger notification only once
+  const prevPartnerAdded = useRef(user?.is_partner_added);
+  useEffect(() => {
+    if (!prevPartnerAdded.current && user?.is_partner_added) {
+      dispatch({
+        type: 'notifications/addNotification',
+        payload: {
+          title: 'Partner Joined!',
+          message: 'Your partner has successfully created an account and linked with you.',
+          type: 'success'
+        }
+      });
+      prevPartnerAdded.current = true;
+    }
+  }, [user?.is_partner_added, dispatch]);
 
   const reconnectAndSend = (sessionId, messageText) => {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -174,6 +254,7 @@ function Dashboard() {
     if (!messageInput.trim()) return;
 
     const text = messageInput.trim();
+    lastSentMessage.current = text;
 
     // Optimistically add user's message to list
     const userMsg = {
@@ -206,6 +287,7 @@ function Dashboard() {
       const newSession = res.data;
       setSessions(prev => [newSession, ...prev]);
       setCurrentSession(newSession);
+      setIsAnalyzing(newSession.status === 'analyzing');
 
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsHost = Base_Url.replace(/^https?:\/\//, '');

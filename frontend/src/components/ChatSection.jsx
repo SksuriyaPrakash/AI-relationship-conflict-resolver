@@ -14,7 +14,17 @@ function ChatSection({
   handleCreateNewSession,
 }) {
   const messageListRef = useRef(null);
-  const hasSentMessage = currentSession?.status === 'collecting' && messages.some(msg => !msg.is_ai && !msg.isSystem);
+  // Find the index of the last AI or System message
+  let lastAiMessageIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].is_ai || messages[i].isSystem) {
+      lastAiMessageIndex = i;
+      break;
+    }
+  }
+
+  // Check if the current user has sent a message AFTER the last AI/System message
+  // (Removed hasSentMessage block entirely)
 
   // Auto-scroll messages list to the bottom
   useEffect(() => {
@@ -152,17 +162,19 @@ function ChatSection({
         )}
 
         {isAnalyzing && (
-          <div className="d-flex flex-column align-items-end" style={{ width: '100%' }}>
-            <div className="d-flex align-items-end gap-2" style={{ maxWidth: '75%', alignSelf: 'flex-end' }}>
-              <div className="p-3 rounded-4 text-muted d-flex align-items-center gap-2" style={{ borderRadius: '16px 16px 4px 16px', backgroundColor: 'rgba(25, 15, 71, 0.05)' }}>
-                <span className="spinner-border spinner-border-sm text-primary" role="status" style={{ color: 'var(--p1-color)' }}></span>
-                <span className="fs-ten">Lerio is analyzing your conflict...</span>
-              </div>
+          <div className="d-flex flex-column align-items-start" style={{ width: '100%' }}>
+            <div className="d-flex align-items-end gap-2" style={{ maxWidth: '75%', alignSelf: 'flex-start' }}>
               <div 
                 className="rounded-circle d-flex align-items-center justify-content-center"
                 style={{ width: '28px', height: '28px', border: '1px solid var(--p1-color)', backgroundColor: 'rgba(25, 15, 71, 0.1)' }}
               >
                 <i className="ti ti-robot s2-color" style={{ fontSize: '14px', color: 'var(--p1-color)' }}></i>
+              </div>
+              <div className="p-3 rounded-4 text-muted d-flex align-items-center gap-2 shadow-sm" style={{ borderRadius: '16px 16px 16px 4px', backgroundColor: '#ffffff', border: '1px solid #e2e8f0' }}>
+                <span className="spinner-grow spinner-grow-sm text-primary" role="status" style={{ color: 'var(--p1-color)' }}></span>
+                <span className="spinner-grow spinner-grow-sm text-primary" role="status" style={{ color: 'var(--p1-color)', animationDelay: '0.2s' }}></span>
+                <span className="spinner-grow spinner-grow-sm text-primary" role="status" style={{ color: 'var(--p1-color)', animationDelay: '0.4s' }}></span>
+                <span className="fs-ten ms-2 fw-medium">Lerio AI is generating...</span>
               </div>
             </div>
           </div>
@@ -186,14 +198,14 @@ function ChatSection({
                 ? "AI is analyzing, inputs are disabled..." 
                 : currentSession?.status === 'analyzing'
                 ? "AI is analyzing, please wait..."
-                : hasSentMessage
-                ? "Waiting for partner message..."
+                : currentSession?.status === 'resolved' || currentSession?.status === 'escalated' 
+                ? "Waiting for AI response..." 
                 : "Write your message to Lerio..."
             }
             value={messageInput}
             onChange={handleTextareaChange}
             onBlur={handleTextareaBlur}
-            disabled={!user?.is_partner_added || isAnalyzing || currentSession?.status === 'analyzing' || hasSentMessage}
+            disabled={!user?.is_partner_added || isAnalyzing || currentSession?.status === 'analyzing'}
             style={{ resize: 'none', borderColor: '#e2e8f0' }}
           ></textarea>
         </div>
@@ -202,11 +214,6 @@ function ChatSection({
           <div className="d-flex align-items-center gap-2 p-3 rounded-3 w-100 bg-warning bg-opacity-10 text-warning border border-warning" style={{ color: '#856404' }}>
             <i className="ti ti-alert-circle fs-four"></i>
             <span className="fs-nine fw_500">First connect with your partner to start resolving conflicts!</span>
-          </div>
-        ) : hasSentMessage ? (
-          <div className="d-flex align-items-center gap-2 p-3 rounded-3 w-100" style={{ backgroundColor: 'rgba(25, 15, 71, 0.05)', color: 'var(--p1-color)' }}>
-            <span className="spinner-border spinner-border-sm text-primary" role="status" style={{ color: 'var(--p1-color)' }}></span>
-            <span className="fs-nine fw_500">Waiting for partner's message to begin AI analysis...</span>
           </div>
         ) : (
           <div className="d-flex align-items-center justify-content-between flex-wrap gap-2 w-100">

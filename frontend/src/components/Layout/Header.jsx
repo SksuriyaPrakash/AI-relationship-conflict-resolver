@@ -2,12 +2,15 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useSelector, useDispatch } from 'react-redux'
 import { logout } from '../../redux/authSlice'
+import { clearNotifications, markAllAsRead } from '../../redux/notificationSlice'
 
 function Header() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { token, user } = useSelector((state) => state.auth);
+  const { notifications } = useSelector((state) => state.notifications || { notifications: [] });
   const isAuthenticated = !!token;
+  const unreadCount = notifications.filter(n => !n.isRead).length;
 
   const [activeDropdown, setActiveDropdown] = useState(null);
 
@@ -77,12 +80,12 @@ function Header() {
                                         <div className="cmn-head">
                                             <button type="button" aria-label="Shopping Button"
                                                 onClick={() => setActiveDropdown(activeDropdown === 'messages' ? null : 'messages')}
-                                                className="common_toggles2 icon-area p-0 box-second d-center position-relative">
+                                                className="icon-area p-0 box-second d-center position-relative">
                                                 <i className="slide-toggle2 ti ti-message-2 fs-three"></i>
                                                 <span
                                                     className="notif-al fs-nine s2-bg px-1 position-absolute rounded-5 p2-color">4</span>
                                             </button>
-                                            <div className="msg_area common_area2 p2-bg p-5 rounded-2">
+                                            <div className={`msg_area common_area2 p2-bg p-5 rounded-2 ${activeDropdown === 'messages' ? 'show' : ''}`}>
                                                 <h5 className="mb-7 mb-md-8">Messages</h5>
                                                 <div className="msg_item d-flex align-items-center gap-2 mb-7">
                                                     <div className="msg_item_thumb">
@@ -145,81 +148,47 @@ function Header() {
                                     <div className={`single-item cart-area search-area ${activeDropdown === 'notifications' ? 'show' : ''}`}>
                                         <div className="cmn-head">
                                             <button type="button" aria-label="Shopping Button"
-                                                onClick={() => setActiveDropdown(activeDropdown === 'notifications' ? null : 'notifications')}
-                                                className="icon-area common_toggles3 p-0  d-center position-relative">
+                                                onClick={() => {
+                                                    const isOpening = activeDropdown !== 'notifications';
+                                                    setActiveDropdown(isOpening ? 'notifications' : null);
+                                                    if (isOpening) {
+                                                        dispatch(markAllAsRead());
+                                                    }
+                                                }}
+                                                className="icon-area p-0  d-center position-relative">
                                                 <i className="ti ti-bell fs-three"></i>
-                                                <span
-                                                    className="notif-al fs-nine s2-bg px-1 position-absolute rounded-5 p2-color">3</span>
+                                                {unreadCount > 0 && (
+                                                    <span className="notif-al fs-nine s2-bg px-1 position-absolute rounded-5 p2-color">{unreadCount}</span>
+                                                )}
                                             </button>
-                                            <div className="noti-area common_area3 p2-bg p-5 rounded-3">
-                                                <h5 className="mb-7 mb-md-8">Notification</h5>
-                                                <div className="noti_item d-flex align-items-center gap-2 mb-7">
-                                                    <div className="msg_item_thumb">
-                                                        <img src="src/assets/images/notification-chat-1.png" className="max-un"
-                                                            alt="Images" />
-                                                    </div>
-                                                    <div className="msg_item-content w-100 ">
-                                                        <div
-                                                            className="msg_item-name d-flex align-items-center justify-content-between gap-2">
-                                                            <span>Piter Maio</span>
-                                                            <span className="s9-color">Just now</span>
-                                                        </div>
-                                                        <p className="s9-color">Comment on your post</p>
-                                                    </div>
+                                            <div className={`noti-area common_area3 p2-bg p-5 rounded-3 ${activeDropdown === 'notifications' ? 'show' : ''}`} style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                                                <div className="d-flex align-items-center justify-content-between mb-7 mb-md-8">
+                                                    <h5 className="mb-0">Notifications</h5>
+                                                    {notifications.length > 0 && (
+                                                        <button type="button" onClick={() => dispatch(clearNotifications())} className="btn btn-sm btn-outline-danger px-2 py-1 fs-nine">Clear</button>
+                                                    )}
                                                 </div>
-                                                <div className="noti_item d-flex align-items-center gap-2 mb-7">
-                                                    <div className="msg_item_thumb">
-                                                        <img src="src/assets/images/notification-chat-3.png" className="max-un"
-                                                            alt="Images" />
-                                                    </div>
-                                                    <div className="msg_item-content w-100">
-                                                        <div
-                                                            className="msg_item-name d-flex align-items-center justify-content-between gap-2">
-                                                            <span>Jacob Jones</span>
-                                                            <span className="s9-color">1hr</span>
-                                                        </div>
-                                                        <p className="s9-color">Sent you a request</p>
-                                                    </div>
-                                                </div>
-                                                <div className="noti_item mb-7">
-                                                    <div
-                                                        className="notis-content d-flex align-items-center justify-content-between gap-2 mb-4">
-                                                        <div className="msg_item_thumb">
-                                                            <img src="src/assets/images/notification-chat-2.png" className="max-un"
-                                                                alt="Images" />
-                                                        </div>
-                                                        <div className="msg_item-content w-100">
-                                                            <div
-                                                                className="msg_item-name d-flex align-items-center justify-content-between gap-2">
-                                                                <span>Kathryn Murphy</span>
-                                                                <span className="s9-color">2min</span>
+                                                
+                                                {notifications.length === 0 ? (
+                                                    <p className="text-muted fs-nine text-center">No notifications yet.</p>
+                                                ) : (
+                                                    notifications.map((noti) => (
+                                                        <div key={noti.id} className={`noti_item d-flex align-items-center gap-2 mb-7 ${noti.isRead ? 'opacity-75' : ''}`}>
+                                                            <div className="msg_item_thumb">
+                                                                <div className={`rounded-circle d-flex align-items-center justify-content-center text-white ${noti.type === 'success' ? 'bg-success' : 'bg-primary'}`} style={{ width: '40px', height: '40px' }}>
+                                                                    <i className={`ti ti-${noti.type === 'success' ? 'check' : 'bell'} fs-five`}></i>
+                                                                </div>
                                                             </div>
-                                                            <p className="s9-color">Like your photo</p>
+                                                            <div className="msg_item-content w-100 ">
+                                                                <div className="msg_item-name d-flex align-items-center justify-content-between gap-2">
+                                                                    <span className="fw_500 fs-nine">{noti.title}</span>
+                                                                    <span className="s9-color" style={{ fontSize: '10px' }}>{new Date(noti.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                                                </div>
+                                                                <p className="s9-color mb-0 fs-ten" style={{ lineHeight: '1.4' }}>{noti.message}</p>
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                    <div className="noti_item-group d-flex align-items-center gap-3">
-                                                        <button type="button"
-                                                            className="noti_item-btn p2-color fs-seven">Accept</button>
-                                                        <button type="button"
-                                                            className="noti_item-btn2 s2-color fs-seven">Delete</button>
-                                                    </div>
-                                                </div>
-                                                <div className="noti_item d-flex align-items-center gap-2 mb-7">
-                                                    <div className="msg_item_thumb">
-                                                        <img src="src/assets/images/notification-chat-4.png" className="max-un"
-                                                            alt="Images" />
-                                                    </div>
-                                                    <div className="msg_item-content w-100">
-                                                        <div
-                                                            className="msg_item-name d-flex align-items-center justify-content-between gap-2">
-                                                            <span>Jacob Jones</span>
-                                                            <span className="s9-color">1hr</span>
-                                                        </div>
-                                                        <p className="s9-color pe-sm-2"> officia consequat duis enim velit mollit.
-                                                            Exercitatio</p>
-                                                    </div>
-                                                </div>
-                                                <a href="javascript:void(0)" className="n2-color fw_500">See all notification</a>
+                                                    ))
+                                                )}
                                             </div>
                                         </div>
                                     </div>
