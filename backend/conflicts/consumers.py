@@ -105,7 +105,15 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         self.session = await self.get_session(self.session_id)
         
         if not self.session:
-            await self.send_json({"type": "error", "message": "Session no longer exists."})
+            # Add debug logging to see WHY the session is missing
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"WebSocket session lookup failed for session_id: {self.session_id}. User: {self.user.username}")
+            
+            await self.send_json({
+                "type": "error", 
+                "message": f"Session no longer exists. (Debug ID: {self.session_id})"
+            })
             await self.close(code=4004)
             return
 
@@ -256,11 +264,15 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def handle_submit_side(self):
+        logger.info(f"[DEBUG] handle_submit_side called for user={self.user.username}, role={self.role}, session={self.session.id}")
+        
         # Set submission status for the user
         await self.mark_side_submitted(self.session, self.role)
+        logger.info(f"[DEBUG] mark_side_submitted finished for role={self.role}")
         
         # Check if the other partner has already submitted
         is_p1_submitted, is_p2_submitted = await self.get_submission_statuses(self.session)
+        logger.info(f"[DEBUG] get_submission_statuses returned p1={is_p1_submitted}, p2={is_p2_submitted}")
 
         # Update progress percentage
         progress_pct = 10
@@ -338,63 +350,39 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         # Detect primary language based on p1 or fallback
         pref_lang = self.session.couple.partner_1.language_preference
 
-        # Prepare graph state inputs
         inputs = {
             "session_id": str(self.session.id),
             "husband_messages": p1_msgs,
             "wife_messages": p2_msgs,
-            "husband_emotions": {},
-            "wife_emotions": {},
-            "conflict_type": "",
-            "root_cause": "",
-            "escalation_flag": False,
-            "resolution": "",
-            "communication_script": "",
             "language": pref_lang,
-            "current_phase": "analyzing"
         }
 
-        # Run pipeline
-        try:
-            # Run in executor thread pool to avoid blocking the async loop
-            result = await database_sync_to_async(conflict_app.invoke)(inputs)
-        except Exception as e:
-            logger.error(f"Error in LangGraph workflow execution: {e}")
-            await self.send_json({
-                "type": "error",
-                "message": f"AI Engine Error (Token limit or Server issue): {str(e)}"
-            })
-            # Determine the phase that failed
-            phase = "cross_ref" if self.session.mismatch_count > 0 else "individual"
-            
-            # Revert session status so they can resubmit
-            await self.update_session_status(self.session, phase)
-            
-            # Delete their latest messages so they don't get duplicated on resubmit
-            await self.delete_latest_messages_in_phase(self.session, phase)
-            
-            # Broadcast error event with restore_input flag
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    "type": "broadcast_error",
-                    "message": f"AI Engine Error (Token limit or Server issue): {str(e)}",
-                    "action": "restore_input"
-                }
-            )
-            return
+        # Broadcast analyzing status
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "broadcast_analyzing",
+                "status": "analyzing"
+            }
+        )
 
-        # Handle escalation check
-        if result.get("escalation_flag", False):
+        from ai_engine.nodes import escalation_detector, cross_reference_analyzer
+        import time
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from ai_engine.nodes import get_llm
+
+        # 1. Run quick escalation check
+        try:
+            escalation_result = await database_sync_to_async(escalation_detector)(inputs)
+        except Exception as e:
+            logger.error(f"Escalation check error: {e}")
+            escalation_result = {"escalation_flag": False}
+
+        if escalation_result.get("escalation_flag", False):
             await self.update_session_status(self.session, "escalated")
             await self.update_progress(self.session, 100, "Safety alert triggered. Professional support resources provided.")
             
-            # Save AI Analysis warning record
-            await self.save_analysis_result(
-                session=self.session,
-                result=result,
-                is_escalated=True
-            )
+            await self.save_analysis_result(self.session, {"severity": "critical", "root_cause": "Safety Escalation"}, is_escalated=True)
             
             warning_msg = (
                 "🚨 SAFETY ALERT: Out-of-bounds safety check triggered. "
@@ -406,7 +394,6 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 "உடனடி ஆபத்து இருந்தால் அவசர உதவி எண்களைத் தொடர்பு கொள்ளவும்."
             )
 
-            # Save warning messages for both
             await self.save_message(self.session, self.session.couple.partner_1, warning_msg, is_ai=True, phase="cross_ref")
             await self.save_message(self.session, self.session.couple.partner_2, warning_msg, is_ai=True, phase="cross_ref")
 
@@ -419,7 +406,63 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             )
             return
 
-        # Normal successful resolution
+        # 2. Start ChatGPT-like live streaming of the conversational analysis!
+        msg_id = f"ai-res-{self.session.id}-{int(time.time())}"
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "broadcast_stream_start",
+                "message_id": msg_id,
+                "phase": "analyzing"
+            }
+        )
+
+        llm = get_llm()
+        prompt = [
+            SystemMessage(content=f"You are a professional marriage therapist. Read both partners' accounts of a conflict. Speak directly to them in {pref_lang}. Acknowledge both of their feelings fairly, provide a thoughtful analysis of the root cause, and suggest a constructive resolution."),
+            HumanMessage(content=f"Partner 1 says: {' '.join(p1_msgs)}\nPartner 2 says: {' '.join(p2_msgs)}")
+        ]
+        
+        analysis_text = ""
+        try:
+            if hasattr(llm, "astream"):
+                async for chunk in llm.astream(prompt):
+                    if chunk.content:
+                        analysis_text += chunk.content
+                        await self.channel_layer.group_send(
+                            self.room_group_name,
+                            {
+                                "type": "broadcast_stream_chunk",
+                                "message_id": msg_id,
+                                "chunk": chunk.content
+                            }
+                        )
+            else:
+                response = await database_sync_to_async(llm.invoke)(prompt)
+                analysis_text = response.content
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        "type": "broadcast_stream_chunk",
+                        "message_id": msg_id,
+                        "chunk": analysis_text
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Error streaming AI analysis: {e}")
+            analysis_text = "I'm sorry, I encountered an error while analyzing your perspectives. Please try again later."
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {"type": "broadcast_stream_chunk", "message_id": msg_id, "chunk": analysis_text}
+            )
+
+        # 3. Silently get structured JSON metrics in background for database
+        try:
+            result = await database_sync_to_async(cross_reference_analyzer)(inputs)
+        except Exception as e:
+            logger.error(f"Error in cross_reference_analyzer: {e}")
+            result = {"match_percentage": 50, "severity": "medium", "root_cause": "Analysis failed"}
+
         match_pct = result.get("match_percentage", 50)
         
         if match_pct < 75:
@@ -459,10 +502,9 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 )
             return
 
-        # match_percentage >= 75
-        import time
         await self.update_session_status(self.session, "analyzing")
-        
+
+        # Determine points deduction
         severity = result.get("severity", "low").lower()
         deduction = 0
         if severity == "critical": deduction = -20
@@ -742,7 +784,9 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def get_user_role(self, session, user):
-        return "partner_1" if session.couple.partner_1 == user else "partner_2"
+        if session.couple.partner_1_id == user.id:
+            return "partner_1"
+        return "partner_2"
 
     @database_sync_to_async
     def get_chat_history(self, session, user):
