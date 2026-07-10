@@ -129,7 +129,13 @@ function ChatSection({
                       textAlign: 'left'
                     }}
                   >
-                    <ReactMarkdown>{msg.message}</ReactMarkdown>
+                    <ReactMarkdown
+                      components={{
+                        p: ({node, ...props}) => <p style={{ color: 'inherit', marginBottom: 0 }} {...props} />
+                      }}
+                    >
+                      {msg.message}
+                    </ReactMarkdown>
                   </div>
 
                   {isUser && (

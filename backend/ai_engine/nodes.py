@@ -67,7 +67,7 @@ def get_llm():
     if not api_key:
         return MockLLM()
     return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model="gemini-2.5-flash-lite",
         google_api_key=api_key,
         temperature=0.2,
         streaming=True
@@ -95,8 +95,10 @@ def escalation_detector(state: Dict[str, Any]) -> Dict[str, Any]:
         response = llm.invoke(prompt)
         result_text = response.content.strip().lower()
         is_escalated = "true" in result_text
-    except Exception:
-        is_escalated = True  # Fallback to safe flag on error
+    except Exception as e:
+        print(f"Error calling Gemini in escalation_detector: {e}")
+        # Fallback to False to prevent blocking the flow during development/API quota issues
+        is_escalated = False
 
     return {"escalation_flag": is_escalated}
 

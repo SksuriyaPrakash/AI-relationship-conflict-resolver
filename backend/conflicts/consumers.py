@@ -251,7 +251,11 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": ai_reply})
         except Exception as e:
             logger.error(f"Streaming error in individual chat: {e}")
-            ai_reply = "Can you tell me more about how that made you feel?" if language == "english" else "அதைப்பற்றி இன்னும் கொஞ்சம் விரிவாகக் கூற முடியுமா?"
+            error_str = str(e).lower()
+            if "quota" in error_str or "429" in error_str or "resourceexhausted" in error_str or "403" in error_str or "api key" in error_str:
+                ai_reply = "API token is missing or the usage limit has been reached. Please check your Gemini API key and quota."
+            else:
+                ai_reply = "Can you tell me more about how that made you feel?" if language == "english" else "அதைப்பற்றி இன்னும் கொஞ்சம் விரிவாகக் கூற முடியுமா?"
             await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": ai_reply})
 
         await self.send_json({"type": "stream.end", "message_id": msg_id})
@@ -461,7 +465,11 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 )
         except Exception as e:
             logger.error(f"Error streaming AI analysis: {e}")
-            analysis_text = "I'm sorry, I encountered an error while analyzing your perspectives. Please try again later."
+            error_str = str(e).lower()
+            if "quota" in error_str or "429" in error_str or "resourceexhausted" in error_str or "403" in error_str or "api key" in error_str:
+                analysis_text = "API token is missing or the usage limit has been reached. Please check your Gemini API key and quota."
+            else:
+                analysis_text = "I'm sorry, I encountered an error while analyzing your perspectives. Please try again later."
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {"type": "broadcast_stream_chunk", "message_id": msg_id, "chunk": analysis_text}
@@ -582,7 +590,11 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 )
         except Exception as e:
             logger.error(f"Streaming error in resolution: {e}")
-            resolution_text = "Based on our analysis, communication is key. Listen to each other."
+            error_str = str(e).lower()
+            if "quota" in error_str or "429" in error_str or "resourceexhausted" in error_str or "403" in error_str or "api key" in error_str:
+                resolution_text = "API token is missing or the usage limit has been reached. Please check your Gemini API key and quota."
+            else:
+                resolution_text = "Based on our analysis, communication is key. Listen to each other."
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
