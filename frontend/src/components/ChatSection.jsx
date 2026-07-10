@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 function ChatSection({
   user,
@@ -128,7 +129,7 @@ function ChatSection({
                       textAlign: 'left'
                     }}
                   >
-                    {msg.message}
+                    <ReactMarkdown>{msg.message}</ReactMarkdown>
                   </div>
 
                   {isUser && (

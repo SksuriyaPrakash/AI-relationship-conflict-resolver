@@ -216,13 +216,15 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         llm = get_llm()
         text = " | ".join(user_msgs)
         language = self.user.language_preference
+        u_name = self.user.first_name or self.user.username
+        u_gender = self.user.gender or "unknown gender"
         prompt = [
             SystemMessage(content=(
-                "You are a supportive relationship counselor. The user is explaining a conflict they are facing with their partner. "
-                "Ask exactly one gentle, open-ended question to help them elaborate on their feelings or the situation. "
-                f"Response MUST be in {language}."
+                f"You are a supportive relationship counselor. You are talking privately to {u_name} ({u_gender}), who is explaining a conflict. "
+                f"Ask exactly one gentle, open-ended question to help them elaborate on their feelings or the situation. "
+                f"Address them directly by their name. Response MUST be in {language}."
             )),
-            HumanMessage(content=text)
+            HumanMessage(content=f"{u_name} says: {text}")
         ]
 
         msg_id = f"ai-ind-{self.user.id}-{int(time.time())}"
@@ -251,6 +253,8 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             logger.error(f"Streaming error in individual chat: {e}")
             ai_reply = "Can you tell me more about how that made you feel?" if language == "english" else "அதைப்பற்றி இன்னும் கொஞ்சம் விரிவாகக் கூற முடியுமா?"
             await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": ai_reply})
+
+        await self.send_json({"type": "stream.end", "message_id": msg_id})
 
         # Save AI reply directed to this user
         await self.save_message(
@@ -344,11 +348,18 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
 
     async def run_analysis_pipeline(self):
         # Retrieve all messages for LangGraph input
-        p1_msgs = await self.get_all_user_messages(self.session, self.session.couple.partner_1)
-        p2_msgs = await self.get_all_user_messages(self.session, self.session.couple.partner_2)
+        p1 = self.session.couple.partner_1
+        p2 = self.session.couple.partner_2
+        p1_msgs = await self.get_all_user_messages(self.session, p1)
+        p2_msgs = await self.get_all_user_messages(self.session, p2)
+        
+        p1_name = p1.first_name or p1.username
+        p1_gender = p1.gender or "unknown gender"
+        p2_name = p2.first_name or p2.username
+        p2_gender = p2.gender or "unknown gender"
 
         # Detect primary language based on p1 or fallback
-        pref_lang = self.session.couple.partner_1.language_preference
+        pref_lang = p1.language_preference
 
         inputs = {
             "session_id": str(self.session.id),
@@ -419,8 +430,8 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
 
         llm = get_llm()
         prompt = [
-            SystemMessage(content=f"You are a professional marriage therapist. Read both partners' accounts of a conflict. Speak directly to them in {pref_lang}. Acknowledge both of their feelings fairly, provide a thoughtful analysis of the root cause, and suggest a constructive resolution."),
-            HumanMessage(content=f"Partner 1 says: {' '.join(p1_msgs)}\nPartner 2 says: {' '.join(p2_msgs)}")
+            SystemMessage(content=f"You are a professional, empathetic marriage therapist. Read the accounts from {p1_name} ({p1_gender}) and {p2_name} ({p2_gender}). Speak directly to them in {pref_lang} using their actual names. Acknowledge both of their feelings fairly, provide a thoughtful and highly personalized analysis of the root cause unique to their situation, and suggest a constructive resolution. Keep your response short, sweet, and strictly under 150 words. Format your response beautifully using Markdown (bolding key terms, using line breaks or bullet points). Do NOT use generic terms like 'Partner 1' or 'Person A'."),
+            HumanMessage(content=f"{p1_name} says: {' '.join(p1_msgs)}\n{p2_name} says: {' '.join(p2_msgs)}")
         ]
         
         analysis_text = ""
@@ -529,16 +540,18 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         wife_txt = " ".join(p2_msgs)
         prompt = [
             SystemMessage(content=(
-                "You are a compassionate relationship counselor. Based on the following conflict analysis, "
-                "write a kind, direct resolution message addressing both partners. Explain why it happened and how to move forward. "
-                f"Response MUST be in {pref_lang}."
+                f"You are a compassionate relationship counselor treating {p1_name} ({p1_gender}) and {p2_name} ({p2_gender}). Based on the conflict analysis, "
+                f"write a highly personalized, short, and direct resolution message in {pref_lang} addressing both of them directly by their names. "
+                "Explain the issue gently like a real doctor, encourage empathy for the opposite side, and give a unified way forward tailored specifically to their unique situation. "
+                "Strictly keep your response under 150 words. Format your response beautifully using Markdown (bolding key terms, using line breaks or bullet points). Do NOT use terms like 'Partner 1' or 'Partner 2'. "
+                "At the very end of your response, you MUST ask exactly: 'Would you like some suggestions or tips to solve this further?'"
             )),
             HumanMessage(content=(
                 f"Conflict Type: {result.get('conflict_type', 'communication')}\n"
                 f"Root Cause: {result.get('root_cause', 'Misunderstanding')}\n"
-                f"Husband said: {husband_txt}\n"
-                f"Wife said: {wife_txt}\n"
-                "Please provide the final resolution guidance."
+                f"{p1_name} said: {husband_txt}\n"
+                f"{p2_name} said: {wife_txt}\n"
+                "Please provide the concise, unique final resolution guidance."
             ))
         ]
 

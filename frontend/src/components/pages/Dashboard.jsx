@@ -125,7 +125,6 @@ function Dashboard() {
           });
         }
       } else if (data.type === 'stream.start' || data.type === 'broadcast_stream_start') {
-        setIsAnalyzing(false);
         setIsWaitingForPartner(false);
         setMessages(prev => {
           if (prev.some(m => m.id === data.message_id)) return prev;
@@ -158,6 +157,9 @@ function Dashboard() {
           isSystem: true,
           timestamp: new Date().toISOString()
         }]);
+      } else if (data.type === 'stream.end') {
+        setIsAnalyzing(false);
+        setIsWaitingForPartner(false);
       } else if (data.type === 'ai.analyzing') {
         setIsAnalyzing(true);
         setIsWaitingForPartner(false);
