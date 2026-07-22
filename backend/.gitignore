@@ -1,7 +1,14 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment
+.env
+
+# SQLite databases
 db.sqlite3
 db.sqlite
-.env
-*.pyc
-*__pycache__
 *.sqlite3
+
+# Chroma vector database
 chroma_db/
