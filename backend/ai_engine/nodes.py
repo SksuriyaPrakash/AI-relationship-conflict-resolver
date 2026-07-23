@@ -83,10 +83,9 @@ def escalation_detector(state: Dict[str, Any]) -> Dict[str, Any]:
     llm = get_llm()
     prompt = [
         SystemMessage(content=(
-            "You are a safety detection system for a couples therapy bot. "
-            "Analyze the messages and use your semantic understanding to verify if either message contains "
-            "signs of physical abuse, severe violence, suicide threats, or serious safety issues. "
-            "Reply with exactly 'true' or 'false'."
+            "Role: Couples therapy safety detector.\n"
+            "Task: Verify if messages contain physical abuse, severe violence, suicide threats, or serious safety issues.\n"
+            "Output: EXACTLY 'true' or 'false'."
         )),
         HumanMessage(content=f"Analyze these messages:\n{combined_text}")
     ]
@@ -104,7 +103,7 @@ def escalation_detector(state: Dict[str, Any]) -> Dict[str, Any]:
 
 # Node 2: cross_reference_analyzer
 def cross_reference_analyzer(state: Dict[str, Any]) -> Dict[str, Any]:
-    llm = get_llm()
+    llm = get_llm().bind(response_format={"type": "json_object"})
     
     husband_txt = " ".join(state.get("husband_messages", []))
     wife_txt = " ".join(state.get("wife_messages", []))
@@ -112,22 +111,15 @@ def cross_reference_analyzer(state: Dict[str, Any]) -> Dict[str, Any]:
     
     prompt = [
         SystemMessage(content=(
-            f"You are a professional marriage therapist. Read both partners' accounts of a conflict and cross-reference them. "
-            "Use semantic comparison (meaning-based) to determine their match percentage. "
-            "Give a severity classification based on this fixed reference table:\n"
-            "- critical (hitting, abuse, cheating)\n"
-            "- high (lying, broken trust, major fight)\n"
-            "- medium (ignoring, broken promises)\n"
-            "- low (lateness, small misunderstanding)\n\n"
-            f"Provide your advice in {language}. Provide personalized advice for each person.\n"
-            "Return ONLY valid JSON with exactly the following keys, no markdown blocks:\n"
+            f"Role: Marriage therapist. Language: {language}.\n"
+            "Task: Cross-reference both partners' accounts. Output ONLY raw JSON matching this schema:\n"
             "{\n"
-            '  "match_percentage": <integer 0-100>,\n'
-            '  "severity": "<critical|high|medium|low>",\n'
+            '  "match_percentage": <int 0-100>,\n'
+            '  "severity": "<critical (abuse/cheating) | high (lying/major fight) | medium (ignoring) | low (lateness/minor)>",\n'
             '  "conflict_type": "<short description>",\n'
-            '  "root_cause": "<detailed root cause>",\n'
-            '  "advice_a": "<advice for Person A>",\n'
-            '  "advice_b": "<advice for Person B>"\n'
+            '  "root_cause": "<detailed cause>",\n'
+            '  "advice_a": "<personalized advice for Person A>",\n'
+            '  "advice_b": "<personalized advice for Person B>"\n'
             "}"
         )),
         HumanMessage(content=f"Person A said: \"{husband_txt}\"\nPerson B said: \"{wife_txt}\"")
@@ -135,8 +127,7 @@ def cross_reference_analyzer(state: Dict[str, Any]) -> Dict[str, Any]:
     
     try:
         response = llm.invoke(prompt)
-        clean_content = response.content.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_content)
+        data = json.loads(response.content.strip())
     except Exception as e:
         # Fallback response
         data = {

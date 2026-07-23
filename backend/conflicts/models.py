@@ -13,6 +13,10 @@ class ConflictSession(models.Model):
     couple = models.ForeignKey(CoupleProfile, on_delete=models.CASCADE, related_name="conflict_sessions")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="collecting")
     mismatch_count = models.IntegerField(default=0)
+    p1_chat_summary = models.TextField(blank=True)
+    p2_chat_summary = models.TextField(blank=True)
+    p1_summarized_count = models.IntegerField(default=0)
+    p2_summarized_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

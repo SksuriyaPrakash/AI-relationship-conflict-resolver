@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
@@ -20,9 +21,8 @@ def query_individual_chat_followup(messages_list, language="english"):
     text = " | ".join(messages_list)
     prompt = [
         SystemMessage(content=(
-            "You are a supportive relationship counselor. The user is explaining a conflict they are facing with their partner. "
-            "Ask exactly one gentle, open-ended question to help them elaborate on their feelings or the situation. "
-            f"Response MUST be in {language}."
+            f"Role: Supportive relationship counselor. Language: {language}.\n"
+            "Task: Ask EXACTLY ONE gentle, open-ended question to help the user elaborate on their feelings/situation."
         )),
         HumanMessage(content=text)
     ]
@@ -37,10 +37,9 @@ def query_clarification_followup(session_context, new_question, language="englis
     llm = get_llm()
     prompt = [
         SystemMessage(content=(
-            "You are a supportive relationship counselor. The couple has just received an analysis of their conflict. "
-            f"Here is the context of their conflict analysis:\n{session_context}\n"
-            "Answer the user's follow-up or clarification question privately and empathetically. "
-            f"Response MUST be in {language}."
+            f"Role: Supportive counselor. Language: {language}.\n"
+            f"Context: Prior conflict analysis:\n{session_context}\n"
+            "Task: Answer the user's clarification question privately and empathetically."
         )),
         HumanMessage(content=new_question)
     ]
@@ -220,7 +219,7 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
 
     async def handle_individual_chat_response(self, user_message):
         import time
-        user_msgs = await self.get_user_messages_in_phase(self.session, self.user, "individual")
+        user_msgs = await self.get_summarized_context(self.session, self.role, self.user, "individual")
         llm = get_llm()
         text = " | ".join(user_msgs)
         language = self.user.language_preference
@@ -228,9 +227,9 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         u_gender = self.user.gender or "unknown gender"
         prompt = [
             SystemMessage(content=(
-                f"You are a supportive relationship counselor. You are talking privately to {u_name} ({u_gender}), who is explaining a conflict. "
-                f"Ask exactly one gentle, open-ended question to help them elaborate on their feelings or the situation. "
-                f"Address them directly by their name. Response MUST be in {language}."
+                f"Role: Supportive counselor. Language: {language}.\n"
+                f"Context: Privately talking to {u_name} ({u_gender}) about a conflict.\n"
+                "Task: Ask EXACTLY ONE gentle, open-ended question to help them elaborate. Address them by name."
             )),
             HumanMessage(content=f"{u_name} says: {text}")
         ]
@@ -448,7 +447,12 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
 
         llm = get_llm()
         prompt = [
-            SystemMessage(content=f"You are a professional, empathetic marriage therapist. Read the accounts from {p1_name} ({p1_gender}) and {p2_name} ({p2_gender}). Speak directly to them in {pref_lang} using their actual names. Acknowledge both of their feelings fairly, provide a thoughtful and highly personalized analysis of the root cause unique to their situation, and suggest a constructive resolution. Keep your response short, sweet, and strictly under 150 words. Format your response beautifully using Markdown (bolding key terms, using line breaks or bullet points). Do NOT use generic terms like 'Partner 1' or 'Person A'."),
+            SystemMessage(content=(
+                f"Role: Empathetic marriage therapist. Language: {pref_lang}.\n"
+                f"Clients: {p1_name} ({p1_gender}) and {p2_name} ({p2_gender}).\n"
+                "Task: Read accounts, acknowledge feelings fairly, analyze root cause, suggest constructive resolution.\n"
+                "Constraints: Under 150 words. Use Markdown (bold/bullets). Speak directly using their actual names. NO generic terms like 'Partner 1'."
+            )),
             HumanMessage(content=f"{p1_name} says: {' '.join(p1_msgs)}\n{p2_name} says: {' '.join(p2_msgs)}")
         ]
         
@@ -570,11 +574,10 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         wife_txt = " ".join(p2_msgs)
         prompt = [
             SystemMessage(content=(
-                f"You are a compassionate relationship counselor treating {p1_name} ({p1_gender}) and {p2_name} ({p2_gender}). Based on the conflict analysis, "
-                f"write a highly personalized, short, and direct resolution message in {pref_lang} addressing both of them directly by their names. "
-                "Explain the issue gently like a real doctor, encourage empathy for the opposite side, and give a unified way forward tailored specifically to their unique situation. "
-                "Strictly keep your response under 150 words. Format your response beautifully using Markdown (bolding key terms, using line breaks or bullet points). Do NOT use terms like 'Partner 1' or 'Partner 2'. "
-                "At the very end of your response, you MUST ask exactly: 'Would you like some suggestions or tips to solve this further?'"
+                f"Role: Compassionate counselor for {p1_name} ({p1_gender}) & {p2_name} ({p2_gender}). Language: {pref_lang}.\n"
+                "Task: Write a personalized, direct resolution addressing both by name. Explain gently, encourage empathy, give a unified way forward.\n"
+                "Constraints: Under 150 words. Use Markdown. NO generic terms like 'Partner 1'.\n"
+                "Mandatory: End response with EXACTLY: 'Would you like some suggestions or tips to solve this further?'"
             )),
             HumanMessage(content=(
                 f"Conflict Type: {result.get('conflict_type', 'communication')}\n"
@@ -673,42 +676,46 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def handle_clarification_response(self, message_text):
-        import time
-        msg_id = f"ai-clarify-{self.user.id}-{int(time.time())}"
-        await self.send_json({
-            "type": "stream.start",
-            "message_id": msg_id,
-            "phase": "clarification"
-        })
+        msg_id = str(uuid.uuid4())
+        await self.send_json({"type": "stream.start", "message_id": msg_id, "is_ai": True, "phase": "clarification"})
+        
+        # 1. Semantic Cache Check
+        analysis_data = await self.get_analysis_context(self.session)
+        cached_reply = await database_sync_to_async(rag_store.find_cached_clarification)(message_text)
+        if cached_reply:
+            await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": cached_reply})
+            await self.send_json({"type": "stream.end", "message_id": msg_id})
+            
+            # Save the cached AI reply
+            await self.save_message(self.session, self.user, cached_reply, is_ai=True, phase="clarification", status="sent", visible_to=self.user)
+            return
 
         try:
-            analysis_data = await self.get_analysis_context(self.session)
-            llm = get_llm()
             language = self.user.language_preference
             prompt = [
                 SystemMessage(content=(
-                    "You are a supportive relationship counselor. The couple has just received an analysis of their conflict. "
-                    f"Here is the context of their conflict analysis:\n{analysis_data}\n"
-                    "Answer the user's follow-up or clarification question privately and empathetically. "
-                    f"Response MUST be in {language}."
+                f"Role: Supportive counselor. Language: {language}.\n"
+                f"Context: Prior conflict analysis:\n{analysis_data}\n"
+                "Task: Answer the user's clarification question privately and empathetically."
                 )),
                 HumanMessage(content=message_text)
             ]
+            response_stream = get_llm().astream(prompt)
+            full_reply = ""
+            async for chunk in response_stream:
+                if chunk.content:
+                    full_reply += chunk.content
+                    await self.send_json({
+                        "type": "stream.chunk",
+                        "message_id": msg_id,
+                        "chunk": chunk.content
+                    })
 
-            ai_reply = ""
-            if hasattr(llm, "astream"):
-                async for chunk in llm.astream(prompt):
-                    if chunk.content:
-                        ai_reply += chunk.content
-                        await self.send_json({
-                            "type": "stream.chunk",
-                            "message_id": msg_id,
-                            "chunk": chunk.content
-                        })
-            else:
-                response = await database_sync_to_async(llm.invoke)(prompt)
-                ai_reply = response.content
-                await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": ai_reply})
+            await self.send_json({"type": "stream.end", "message_id": msg_id})
+            
+            # Cache the newly generated reply for future similar questions
+            if full_reply.strip():
+                await database_sync_to_async(rag_store.cache_clarification_response)(message_text, full_reply.strip())
 
         except Exception as e:
             logger.error(f"Error in clarification streaming: {e}")
@@ -821,6 +828,43 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         })
 
     # --- Database Operations (database_sync_to_async wrappers) ---
+
+    async def get_summarized_context(self, session, role, user, phase="individual"):
+        msgs = await self.get_user_messages_in_phase(session, user, phase)
+        summary = session.p1_chat_summary if role == "partner_1" else session.p2_chat_summary
+        count = session.p1_summarized_count if role == "partner_1" else session.p2_summarized_count
+        
+        if len(msgs) - count > 5:
+            new_msgs_to_summarize = msgs[count:-3]
+            if new_msgs_to_summarize:
+                llm = get_llm()
+                text_to_summarize = " | ".join(new_msgs_to_summarize)
+                prompt = [
+                    SystemMessage(content="You are an AI assistant. Summarize the following chat history briefly. Retain important emotional context. Include previous context if provided."),
+                    HumanMessage(content=f"Previous Summary: {summary}\nNew Messages: {text_to_summarize}")
+                ]
+                try:
+                    response = await database_sync_to_async(llm.invoke)(prompt)
+                    new_summary = response.content.strip()
+                    
+                    if role == "partner_1":
+                        session.p1_chat_summary = new_summary
+                        session.p1_summarized_count = len(msgs) - 3
+                    else:
+                        session.p2_chat_summary = new_summary
+                        session.p2_summarized_count = len(msgs) - 3
+                    await database_sync_to_async(session.save)()
+                    
+                    summary = new_summary
+                    count = len(msgs) - 3
+                except Exception as e:
+                    logger.error(f"Error summarizing: {e}")
+        
+        final_msgs = []
+        if summary:
+            final_msgs.append(f"[Previous Context Summary: {summary}]")
+        final_msgs.extend(msgs[count:])
+        return final_msgs
 
     @database_sync_to_async
     def get_session(self, session_id):
