@@ -1,13 +1,13 @@
 import os
 import json
 from typing import Dict, List, Any
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from .rag_store import rag_store
 
-# Mock LLM for local development when GEMINI_API_KEY is not set
+# Mock LLM for local development when OPENAI_API_KEY is not set
 class MockLLM:
-    def __init__(self, model_name="mock-gemini-pro"):
+    def __init__(self, model_name="mock-gpt-4o-mini"):
         self.model_name = model_name
 
     def invoke(self, messages):
@@ -44,7 +44,7 @@ class MockLLM:
             return HumanMessage(content="I understand this is difficult. Let's look at how we can address this.")
             
         else:
-            return HumanMessage(content="This is a mock live stream response to demonstrate token-by-token generation. In production with a valid Gemini API key, you will see the actual AI response streaming here!")
+            return HumanMessage(content="This is a mock live stream response to demonstrate token-by-token generation. In production with a valid OpenAI API key, you will see the actual AI response streaming here!")
 
     async def astream(self, messages):
         import asyncio
@@ -63,12 +63,12 @@ class MockLLM:
             await asyncio.sleep(0.1)
 
 def get_llm():
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return MockLLM()
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash-lite",
-        google_api_key=api_key,
+    return ChatOpenAI(
+        model="gpt-4o-mini",
+        api_key=api_key,
         temperature=0.2,
         streaming=True
     )
@@ -79,7 +79,7 @@ def escalation_detector(state: Dict[str, Any]) -> Dict[str, Any]:
     all_msgs = state.get("husband_messages", []) + state.get("wife_messages", [])
     combined_text = " ".join(all_msgs)
     
-    # Semantic Gemini Context Verification for Abuse/Safety Check
+    # Semantic OpenAI Context Verification for Abuse/Safety Check
     llm = get_llm()
     prompt = [
         SystemMessage(content=(
@@ -96,7 +96,7 @@ def escalation_detector(state: Dict[str, Any]) -> Dict[str, Any]:
         result_text = response.content.strip().lower()
         is_escalated = "true" in result_text
     except Exception as e:
-        print(f"Error calling Gemini in escalation_detector: {e}")
+        print(f"Error calling OpenAI in escalation_detector: {e}")
         # Fallback to False to prevent blocking the flow during development/API quota issues
         is_escalated = False
 

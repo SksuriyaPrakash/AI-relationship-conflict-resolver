@@ -122,6 +122,14 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             if not message_text:
                 return
 
+            # Token cost optimization: Input length validation
+            if len(message_text) > 1000:
+                await self.send_json({
+                    "type": "error",
+                    "message": "Message is too long. Please keep it under 1000 characters."
+                })
+                return
+
             # Determine the current phase of chat based on session status
             phase = "individual"
             if self.session.status == "cross_referencing":
@@ -251,14 +259,20 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": ai_reply})
         except Exception as e:
             logger.error(f"Streaming error in individual chat: {e}")
+            await self.delete_latest_user_message(self.session, self.user, "individual")
             error_str = str(e).lower()
             if "quota" in error_str or "429" in error_str or "resourceexhausted" in error_str or "403" in error_str or "api key" in error_str:
-                ai_reply = "API token is missing or the usage limit has been reached. Please check your Gemini API key and quota."
+                error_msg = "API token is missing or the usage limit has been reached. Please check your OpenAI API key and quota."
             else:
-                ai_reply = "Can you tell me more about how that made you feel?" if language == "english" else "அதைப்பற்றி இன்னும் கொஞ்சம் விரிவாகக் கூற முடியுமா?"
-            await self.send_json({"type": "stream.chunk", "message_id": msg_id, "chunk": ai_reply})
-
-        await self.send_json({"type": "stream.end", "message_id": msg_id})
+                error_msg = "AI failed to respond. Please try again."
+            
+            await self.send_json({
+                "type": "error",
+                "message": error_msg,
+                "action": "restore_input",
+                "original_message": user_msgs[-1] if user_msgs else ""
+            })
+            return
 
         # Save AI reply directed to this user
         await self.save_message(
@@ -465,15 +479,23 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 )
         except Exception as e:
             logger.error(f"Error streaming AI analysis: {e}")
+            # Revert state to avoid getting stuck in analyzing
+            await self.update_session_status(self.session, "cross_referencing")
             error_str = str(e).lower()
             if "quota" in error_str or "429" in error_str or "resourceexhausted" in error_str or "403" in error_str or "api key" in error_str:
-                analysis_text = "API token is missing or the usage limit has been reached. Please check your Gemini API key and quota."
+                error_msg = "API token is missing or the usage limit has been reached. Please check your OpenAI API key and quota."
             else:
-                analysis_text = "I'm sorry, I encountered an error while analyzing your perspectives. Please try again later."
+                error_msg = "I'm sorry, I encountered an error while analyzing your perspectives. Please try again."
+            
             await self.channel_layer.group_send(
                 self.room_group_name,
-                {"type": "broadcast_stream_chunk", "message_id": msg_id, "chunk": analysis_text}
+                {
+                    "type": "error",
+                    "message": error_msg,
+                    "action": "restore_input"
+                }
             )
+            return
 
         # 3. Silently get structured JSON metrics in background for database
         try:
@@ -590,19 +612,22 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 )
         except Exception as e:
             logger.error(f"Streaming error in resolution: {e}")
+            await self.update_session_status(self.session, "cross_referencing")
             error_str = str(e).lower()
             if "quota" in error_str or "429" in error_str or "resourceexhausted" in error_str or "403" in error_str or "api key" in error_str:
-                resolution_text = "API token is missing or the usage limit has been reached. Please check your Gemini API key and quota."
+                error_msg = "API token is missing or the usage limit has been reached. Please check your OpenAI API key and quota."
             else:
-                resolution_text = "Based on our analysis, communication is key. Listen to each other."
+                error_msg = "Encountered an error while generating resolution. Please try again."
+            
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
-                    "type": "broadcast_stream_chunk",
-                    "message_id": msg_id,
-                    "chunk": resolution_text
+                    "type": "error",
+                    "message": error_msg,
+                    "action": "restore_input"
                 }
             )
+            return
 
         result["resolution"] = resolution_text.strip()
 
@@ -687,11 +712,12 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
 
         except Exception as e:
             logger.error(f"Error in clarification streaming: {e}")
-            await self.delete_latest_clarification_message(self.session, self.user)
+            await self.delete_latest_user_message(self.session, self.user, "clarification")
             await self.send_json({
                 "type": "error",
                 "message": f"AI Engine Error: {str(e)}",
-                "action": "restore_input"
+                "action": "restore_input",
+                "original_message": message_text
             })
             return
 
@@ -875,8 +901,8 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
             latest_p2.delete()
 
     @database_sync_to_async
-    def delete_latest_clarification_message(self, session, sender):
-        latest = ChatMessage.objects.filter(session=session, sender=sender, is_ai=False, phase="clarification").order_by('-timestamp').first()
+    def delete_latest_user_message(self, session, sender, phase):
+        latest = ChatMessage.objects.filter(session=session, sender=sender, is_ai=False, phase=phase).order_by('-timestamp').first()
         if latest:
             latest.delete()
 
