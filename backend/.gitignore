@@ -12,3 +12,5 @@ db.sqlite
 
 # Chroma vector database
 chroma_db/
+
+migrations/

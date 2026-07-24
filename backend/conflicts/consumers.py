@@ -1,6 +1,7 @@
 import json
 import logging
 import uuid
+import asyncio
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
@@ -317,8 +318,8 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
 
-            # Trigger LangGraph pipeline
-            await self.run_analysis_pipeline()
+            # Trigger LangGraph pipeline in background to avoid blocking consumer
+            asyncio.create_task(self.run_analysis_pipeline())
         else:
             # Only one has submitted.
             await self.send_json({
@@ -349,8 +350,8 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
 
-            # Trigger LangGraph pipeline
-            await self.run_analysis_pipeline()
+            # Trigger LangGraph pipeline in background to avoid blocking consumer
+            asyncio.create_task(self.run_analysis_pipeline())
         else:
             # One replied, waiting for other
             await self.send_json({
@@ -470,6 +471,15 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                                 "chunk": chunk.content
                             }
                         )
+                
+                # Send stream end
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        "type": "broadcast_stream_end",
+                        "message_id": msg_id
+                    }
+                )
             else:
                 response = await database_sync_to_async(llm.invoke)(prompt)
                 analysis_text = response.content
@@ -602,6 +612,15 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                                 "chunk": chunk.content
                             }
                         )
+                
+                # Send stream end
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        "type": "broadcast_stream_end",
+                        "message_id": msg_id
+                    }
+                )
             else:
                 response = await database_sync_to_async(llm.invoke)(prompt)
                 resolution_text = response.content
@@ -700,16 +719,26 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
                 )),
                 HumanMessage(content=message_text)
             ]
-            response_stream = get_llm().astream(prompt)
+            llm = get_llm()
             full_reply = ""
-            async for chunk in response_stream:
-                if chunk.content:
-                    full_reply += chunk.content
-                    await self.send_json({
-                        "type": "stream.chunk",
-                        "message_id": msg_id,
-                        "chunk": chunk.content
-                    })
+            
+            if hasattr(llm, "astream"):
+                async for chunk in llm.astream(prompt):
+                    if chunk.content:
+                        full_reply += chunk.content
+                        await self.send_json({
+                            "type": "stream.chunk",
+                            "message_id": msg_id,
+                            "chunk": chunk.content
+                        })
+            else:
+                response = await database_sync_to_async(llm.invoke)(prompt)
+                full_reply = response.content
+                await self.send_json({
+                    "type": "stream.chunk",
+                    "message_id": msg_id,
+                    "chunk": full_reply
+                })
 
             await self.send_json({"type": "stream.end", "message_id": msg_id})
             
@@ -732,7 +761,7 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
         await self.save_message(
             session=self.session,
             sender=self.user,
-            message=ai_reply.strip(),
+            message=full_reply.strip(),
             is_ai=True,
             phase="clarification",
             status="sent",
@@ -803,7 +832,15 @@ class ConflictConsumer(AsyncJsonWebsocketConsumer):
     async def broadcast_stream_start(self, event):
         await self.send_json({
             "type": "stream.start",
-            "message_id": event["message_id"]
+            "message_id": event.get("message_id"),
+            "phase": event.get("phase", "cross_ref"),
+            "is_ai": True
+        })
+
+    async def broadcast_stream_end(self, event):
+        await self.send_json({
+            "type": "stream.end",
+            "message_id": event.get("message_id")
         })
 
     async def broadcast_stream_chunk(self, event):
